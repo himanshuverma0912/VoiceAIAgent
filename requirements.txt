@@ -1,0 +1,14 @@
+livekit-agents
+livekit-agents[silero,turn-detector]~=1.2
+livekit-plugins-openai
+livekit-plugins-noise-cancellation~=0.2
+requests
+python-dotenv
+livekit-plugins-deepgram
+pydantic-ai-slim[openai,mcp]
+livekit-plugins-cartesia
+aiohttp
+boto3
+pydub
+piper-tts
+livekit-plugins-aws
