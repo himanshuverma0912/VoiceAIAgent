@@ -3,7 +3,7 @@ name: Deploy Voice Agent to EC2
 on:
   push:
     branches:
-      - main # Triggers the pipeline when you push to the main branch
+      - main
 
 jobs:
   build-and-deploy:
