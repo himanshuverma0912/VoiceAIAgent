@@ -24,7 +24,7 @@ jobs:
         with:
           context: .
           push: true
-          tags: ${{ secrets.DOCKER_USERNAME }}/outboundagent:latest
+          tags: ${{ secrets.DOCKER_USERNAME }}/inboundagent:latest
 
       - name: Deploy to EC2 and Restart Container
         uses: appleboy/ssh-action@v1.0.3
@@ -35,19 +35,19 @@ jobs:
           # This script runs directly on your EC2 instance
           script: |
             # Pull the newly built image
-            docker pull ${{ secrets.DOCKER_USERNAME }}/outboundagent:latest
+            docker pull ${{ secrets.DOCKER_USERNAME }}/inboundagent:latest
             
             # Stop and remove the existing container if it is running
-            docker stop outboundagent || true
-            docker rm outboundagent || true
+            docker stop inboundagent || true
+            docker rm inboundagent || true
             
             # Run the new container, mounting your existing .env file
             docker run -d \
-              --name outboundagent \
+              --name inboundagent \
               --restart unless-stopped \
-              --env-file /home/ubuntu/outbound/.env \
+              --env-file /home/ubuntu/VoiceAIAgent/.env \
               -p 8081:8081 \
-              ${{ secrets.DOCKER_USERNAME }}/outboundagent:latest
+              ${{ secrets.DOCKER_USERNAME }}/inboundagent:latest
             
             # Clean up old unused images to save EC2 disk space
             docker image prune -af
