@@ -2,8 +2,8 @@
 
 A *flow* describes one project's conversation as a graph of nodes. It is pure
 data: the same flow engine runs every flow, so a new project never needs code
-changes. Flow files live in flows/ for now; in Phase 3 they come from the Go
-config service, and in Phase 4 the UI edits them.
+changes. Flows are published in the Go config service (config-service/), which
+checks them with a port of this module; flows/ holds the fallback and examples.
 
 Node types
 ----------
@@ -49,13 +49,17 @@ BUILTIN_VARIABLES = {
 }
 
 # Lower-case identifiers: node ids, field names, transition names.
-Identifier = Annotated[str, Field(pattern=r"^[a-z][a-z0-9_]{0,47}$")]
+IDENTIFIER_PATTERN = r"^[a-z][a-z0-9_]{0,47}$"
+IDENTIFIER_MESSAGE = "must be lower-case letters, digits and _ , starting with a letter (max 48 characters)"
+Identifier = Annotated[str, Field(pattern=IDENTIFIER_PATTERN)]
 VARIABLE_RE = re.compile(r"\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}")
 
 
 class _Strict(BaseModel):
     # Unknown keys are errors, so a typo like "transitons" is caught instead of ignored.
-    model_config = ConfigDict(extra="forbid")
+    # strict: JSON types must match exactly ("4" is not a number, "true" is not a
+    # boolean), the same rules the Go config service applies.
+    model_config = ConfigDict(extra="forbid", strict=True)
 
 
 # ── Values captured on a transition or collected by a custom field ────────────
@@ -342,11 +346,15 @@ def check_flow(flow: Flow) -> list[str]:
     for where, text in _texts(flow):
         for var in VARIABLE_RE.findall(text):
             if var not in known:
-                problems.append(
-                    f"{where}: unknown variable {{{{{var}}}}}; built-ins are "
-                    f"{', '.join(sorted(BUILTIN_VARIABLES))}, plus any captured or collected field"
-                )
+                problems.append(_unknown_variable(where, var))
     return problems
+
+
+def _unknown_variable(where: str, var: str) -> str:
+    return (
+        f"{where}: unknown variable {{{{{var}}}}}; built-ins are "
+        f"{', '.join(sorted(BUILTIN_VARIABLES))}, plus any captured or collected field"
+    )
 
 
 def parse_flow(data: dict) -> Flow:
@@ -407,7 +415,8 @@ def _best_effort_checks(data: object) -> list[str]:
                 texts.append((f"nodes.{nid}.transitions[{i}].when", t["when"]))
         if isinstance(node.get("next"), str) and node["next"] not in nodes:
             problems.append(f"nodes.{nid}.next: '{node['next']}' is not a node")
-        for i, f in enumerate(node.get("fields") or []):
+        fields = node.get("fields")
+        for i, f in enumerate(fields if isinstance(fields, list) else []):
             if isinstance(f, dict):
                 if isinstance(f.get("name"), str):
                     defined.add(f["name"])
@@ -416,19 +425,45 @@ def _best_effort_checks(data: object) -> list[str]:
     for where, text in texts:
         for var in VARIABLE_RE.findall(text):
             if var not in defined:
-                problems.append(f"{where}: unknown variable {{{{{var}}}}}")
+                problems.append(_unknown_variable(where, var))
     return problems
 
 
+def _format_loc(loc: tuple) -> str:
+    """('nodes', 'ask', 'agent', 'transitions', 0, 'to') -> 'nodes.ask.transitions[0].to'.
+
+    pydantic puts the chosen union member's tag in the location: right after a
+    node id ('agent', 'collect', 'end') and right after a field's index
+    ('custom', 'builtin:name', ...). Those are dropped by position, so a node
+    that happens to be called "end" keeps its name."""
+    out = ""
+    for i, part in enumerate(loc):
+        if i == 2 and loc[0] == "nodes" and part in ("agent", "collect", "end"):
+            continue
+        if (
+            i >= 2
+            and isinstance(loc[i - 1], int)
+            and loc[i - 2] == "fields"
+            and isinstance(part, str)
+            and (part == "custom" or part.startswith("builtin:"))
+        ):
+            continue
+        if isinstance(part, int):
+            out += f"[{part}]"
+        else:
+            out += f".{part}" if out else str(part)
+    return out
+
+
 def _format_pydantic_error(err: dict) -> str:
-    loc = ".".join(str(p) for p in err["loc"] if not (isinstance(p, str) and p.startswith(("builtin:", "custom"))))
-    loc = re.sub(r"\.(\d+)(?=\.|$)", r"[\1]", loc)  # fields.0.name -> fields[0].name
-    loc = re.sub(r"\.(agent|collect|end)(?=\.|$)", "", loc)  # drop the union tag pydantic adds
+    loc = _format_loc(err["loc"])
     msg = err["msg"]
     if err["type"] == "extra_forbidden":
         msg = "unknown key (check the spelling)"
+    elif err["type"] == "string_pattern_mismatch" and (err.get("ctx") or {}).get("pattern") == IDENTIFIER_PATTERN:
+        msg = IDENTIFIER_MESSAGE
     elif err["type"] == "string_pattern_mismatch":
-        msg = "must be lower-case letters, digits and _ , starting with a letter (max 48 characters)"
+        msg = "must be a language code like 'hi', 'en', 'hi-IN', or 'multi'"
     elif err["type"] == "union_tag_invalid":
         tag = str((err.get("ctx") or {}).get("tag", ""))
         if tag.startswith("builtin:"):

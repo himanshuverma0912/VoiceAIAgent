@@ -1,15 +1,16 @@
-# Platform services that change rarely: LiteLLM and Postgres now; the Go config
-# service, Keycloak and the UI get added here in later phases.
+# Platform services that change rarely: LiteLLM (+ its Postgres) and the Go
+# config service (+ its own Postgres). Keycloak and the UI get added here later.
 #
 # The voice agent is NOT in this file. It is deployed by
 # .github/workflows/deploy.yml, which starts the new container before draining
 # the old one so live calls aren't dropped (Compose would replace the container
 # and cut them off). The agent joins this stack's "voice-platform" network and
-# reaches LiteLLM at http://litellm:4000.
+# reaches LiteLLM at http://litellm:4000 and the config service at
+# http://config-service:8080.
 #
-# First start, on EC2 inside this folder:
+# First start, on EC2 inside this folder (config-service/ must sit next to it):
 #   cp .env.example .env     # then fill in the values
-#   docker compose up -d
+#   docker compose up -d --build
 name: voice-platform
 
 services:
@@ -55,6 +56,52 @@ services:
       - postgres_data:/var/lib/postgresql/data
     networks: [voice-platform]
 
+  # Stores flows (prompts, nodes, guardrails), published versions and which
+  # number runs which flow. The voice agent asks it at the start of each call.
+  config-service:
+    build: ../config-service
+    image: voice-platform/config-service:local
+    container_name: config-service
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://platform:${PLATFORM_DB_PASSWORD:?set it in .env}@platform-db:5432/platform?sslmode=disable
+      ADMIN_TOKEN: ${CONFIG_ADMIN_TOKEN:?set it in .env}
+      RUNTIME_TOKEN: ${CONFIG_RUNTIME_TOKEN:?set it in .env}
+    ports:
+      # Same as LiteLLM: only from the EC2 machine itself (or an SSH tunnel).
+      - "127.0.0.1:8080:8080"
+    healthcheck:
+      test: ["CMD", "/config-service", "-healthcheck"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    depends_on:
+      platform-db:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options: { max-size: 10m, max-file: "3" }
+    networks: [voice-platform]
+
+  # The config service's own database, separate from LiteLLM's, so each can be
+  # upgraded, backed up or moved (e.g. to RDS) on its own.
+  platform-db:
+    image: postgres:16
+    container_name: platform-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: platform
+      POSTGRES_PASSWORD: ${PLATFORM_DB_PASSWORD:?set it in .env}
+      POSTGRES_DB: platform
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U platform -d platform"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - platform_db_data:/var/lib/postgresql/data
+    networks: [voice-platform]
+
 networks:
   voice-platform:
     # Fixed name so the agent container can join it with --network voice-platform.
@@ -62,3 +109,4 @@ networks:
 
 volumes:
   postgres_data:
+  platform_db_data:

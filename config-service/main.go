@@ -1,0 +1,132 @@
+// Config service: stores flows (prompts, nodes, guardrails), their published
+// versions and which phone number runs which flow, in Postgres. The voice agent
+// asks it which flow to run at the start of each call.
+//
+// Settings (environment):
+//
+//	DATABASE_URL   postgres://user:pass@host:5432/db?sslmode=disable
+//	ADMIN_TOKEN    token for /v1/* (flow teams, the UI)
+//	RUNTIME_TOKEN  token for /internal/v1/* (the voice agent)
+//	LISTEN_ADDR    default :8080
+//
+// `config-service -healthcheck` exits 0 if the service on this host is up
+// (used by Docker; the image has no curl).
+package main
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"flag"
+	"log/slog"
+	"net/http"
+	"os"
+	"os/signal"
+	"strings"
+	"syscall"
+	"time"
+
+	_ "github.com/lib/pq"
+
+	"github.com/himanshuverma0912/VoiceAIAgent/config-service/internal/api"
+	"github.com/himanshuverma0912/VoiceAIAgent/config-service/internal/store"
+)
+
+func env(name, def string) string {
+	if v := strings.TrimSpace(os.Getenv(name)); v != "" {
+		return v
+	}
+	return def
+}
+
+func main() {
+	healthcheck := flag.Bool("healthcheck", false, "check the local service is up, then exit")
+	flag.Parse()
+	addr := env("LISTEN_ADDR", ":8080")
+	if *healthcheck {
+		os.Exit(runHealthcheck(addr))
+	}
+
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
+	if err := run(addr); err != nil {
+		slog.Error("config service stopped", "error", err)
+		os.Exit(1)
+	}
+}
+
+func run(addr string) error {
+	dbURL, admin, runtime := env("DATABASE_URL", ""), env("ADMIN_TOKEN", ""), env("RUNTIME_TOKEN", "")
+	if dbURL == "" || admin == "" || runtime == "" {
+		return errors.New("DATABASE_URL, ADMIN_TOKEN and RUNTIME_TOKEN must all be set")
+	}
+	if len(admin) < 24 || len(runtime) < 24 || admin == runtime {
+		return errors.New("ADMIN_TOKEN and RUNTIME_TOKEN must be different and at least 24 characters (openssl rand -hex 24)")
+	}
+
+	db, err := sql.Open("postgres", dbURL)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(10)
+	db.SetConnMaxIdleTime(5 * time.Minute)
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	// The database container may still be starting: retry for up to a minute.
+	for attempt := 1; ; attempt++ {
+		pingCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		err = db.PingContext(pingCtx)
+		cancel()
+		if err == nil {
+			break
+		}
+		if attempt == 20 || ctx.Err() != nil {
+			return errors.New("database not reachable: " + err.Error())
+		}
+		slog.Info("waiting for the database", "attempt", attempt)
+		time.Sleep(3 * time.Second)
+	}
+	if err := store.Migrate(ctx, db); err != nil {
+		return err
+	}
+
+	srv := &http.Server{
+		Addr:              addr,
+		Handler:           (&api.Server{Store: store.New(db), AdminToken: admin, RuntimeToken: runtime}).Handler(),
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      15 * time.Second,
+		IdleTimeout:       90 * time.Second,
+	}
+	errs := make(chan error, 1)
+	go func() { errs <- srv.ListenAndServe() }()
+	slog.Info("config service listening", "addr", addr)
+
+	select {
+	case err := <-errs:
+		return err
+	case <-ctx.Done():
+	}
+	slog.Info("shutting down")
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	return srv.Shutdown(shutdownCtx)
+}
+
+func runHealthcheck(addr string) int {
+	if strings.HasPrefix(addr, ":") {
+		addr = "127.0.0.1" + addr
+	}
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Get("http://" + addr + "/healthz")
+	if err != nil {
+		return 1
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return 1
+	}
+	return 0
+}
