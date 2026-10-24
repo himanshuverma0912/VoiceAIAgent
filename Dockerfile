@@ -4,7 +4,8 @@ ENV PYTHONUNBUFFERED=1
 ENV TZ=Asia/Kolkata
 
 # 1. Install uv directly from astral's official image
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+#    (pinned, so a new uv release can't change the build without a commit)
+COPY --from=ghcr.io/astral-sh/uv:0.13.5 /uv /uvx /bin/
 
 RUN apt-get update && apt-get install -y \
     tzdata \
@@ -27,6 +28,9 @@ RUN uv pip install --system --no-cache -r requirements.txt
 COPY agent.py .
 COPY prompts.py .
 
+# Health check endpoint of the agent server (GET / returns "OK")
 EXPOSE 8081
 
-CMD ["python", "agent.py", "start"]
+# livekit-agents 1.8 deprecates `python agent.py start` (cli.run_app);
+# this is the replacement. It finds the `server` object in agent.py.
+CMD ["python", "-m", "livekit.agents", "start", "agent.py"]

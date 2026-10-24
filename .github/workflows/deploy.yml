@@ -19,14 +19,27 @@ jobs:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
+      # Each image is tagged with its commit SHA (for rollback) as well as "latest".
       - name: Build and Push Docker Image
         uses: docker/build-push-action@v5
         with:
           context: .
           push: true
-          tags: ${{ secrets.DOCKER_USERNAME }}/inboundagent:latest
+          tags: |
+            ${{ secrets.DOCKER_USERNAME }}/inboundagent:latest
+            ${{ secrets.DOCKER_USERNAME }}/inboundagent:${{ github.sha }}
 
-      - name: Deploy to EC2 and Restart Container
+      # Zero-downtime deploy:
+      #   1. start the new container next to the old one
+      #   2. wait until it has registered with LiveKit
+      #   3. tell the old container to drain: it takes no new calls and finishes
+      #      live ones (up to 900 s, matching drain_timeout in agent.py), then stops
+      # Both containers register under the same agent name, so LiveKit sends
+      # new calls only to the one that isn't draining.
+      #
+      # Rollback: re-run this workflow on an older commit, or on EC2 run the same
+      # steps with the image tag of a previous commit SHA.
+      - name: Deploy to EC2
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.EC2_HOST }}
@@ -34,20 +47,62 @@ jobs:
           key: ${{ secrets.EC2_SSH_KEY }}
           # This script runs directly on your EC2 instance
           script: |
-            # Pull the newly built image
-            docker pull ${{ secrets.DOCKER_USERNAME }}/inboundagent:latest
-            
-            # Stop and remove the existing container if it is running
-            docker stop inboundagent || true
-            docker rm inboundagent || true
-            
-            # Run the new container, mounting your existing .env file
+            REPO="${{ secrets.DOCKER_USERNAME }}/inboundagent"
+            SHA="${{ github.sha }}"
+            IMAGE="$REPO:$SHA"
+            NEW="inboundagent-${SHA:0:7}"
+
+            docker pull "$IMAGE" || exit 1
+
+            # Re-running the workflow for a commit that is already live: nothing to do.
+            if docker ps --format '{{.Names}}' | grep -qx "$NEW"; then
+              echo "$NEW is already running"
+              exit 0
+            fi
+            docker rm "$NEW" >/dev/null 2>&1 || true
+
+            # Containers to drain afterwards (the very first one is called "inboundagent").
+            OLD=$(docker ps --filter "name=^inboundagent" --format '{{.Names}}' | grep -vx "$NEW" || true)
+
+            # No host port is published (the old setup used -p 8081:8081), so the
+            # old and new containers can run at the same time. --stop-timeout makes
+            # any `docker stop` on this container wait for the drain by default.
             docker run -d \
-              --name inboundagent \
+              --name "$NEW" \
               --restart unless-stopped \
+              --stop-timeout 900 \
               --env-file /home/ubuntu/VoiceAIAgent/.env \
-              -p 8081:8081 \
-              ${{ secrets.DOCKER_USERNAME }}/inboundagent:latest
-            
-            # Clean up old unused images to save EC2 disk space
-            docker image prune -af
+              "$IMAGE" || exit 1
+
+            # Wait up to 2 minutes for the new agent to register with LiveKit.
+            READY=0
+            for _ in $(seq 1 60); do
+              if docker logs "$NEW" 2>&1 | grep -q "registered worker"; then
+                READY=1
+                break
+              fi
+              if [ "$(docker inspect -f '{{.State.Running}}' "$NEW")" != "true" ]; then
+                break
+              fi
+              sleep 2
+            done
+
+            if [ "$READY" != "1" ]; then
+              echo "New container did not register; keeping the old one running."
+              docker logs --tail 80 "$NEW"
+              docker rm -f "$NEW"
+              exit 1
+            fi
+            echo "$NEW registered with LiveKit"
+
+            # Drain the old containers in the background so this step doesn't wait 15 min.
+            for C in $OLD; do
+              echo "Draining $C (live calls get up to 15 minutes to finish)"
+              nohup sh -c "docker stop -t 900 $C && docker rm $C" >/dev/null 2>&1 &
+            done
+
+            # Keep the 3 newest SHA-tagged images for rollback; delete older ones.
+            # Images still used by a draining container fail to delete, which is fine.
+            docker images "$REPO" --format '{{.Repository}}:{{.Tag}}' \
+              | grep -v ':latest$' | tail -n +4 | xargs -r docker rmi >/dev/null 2>&1 || true
+            docker image prune -f >/dev/null 2>&1 || true
