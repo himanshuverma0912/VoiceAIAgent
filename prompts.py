@@ -1,10 +1,30 @@
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-indian_time = datetime.now(ZoneInfo("Asia/Kolkata"))
-formatted_time = indian_time.strftime("%A, %B %d, %Y at %I:%M %p %Z")
+# First thing the caller hears. Hindi first (Devanagari, so the Hindi voice
+# pronounces it naturally), then an English line for English speakers.
+GREETING = (
+    "नमस्ते, आप शिकायत विभाग हेल्पलाइन से बात कर रहे हैं। "
+    "कृपया अपनी समस्या विस्तार से बताइए। "
+    "You can also speak in English."
+)
 
-AGENT_INSTRUCTION = f"""
+
+def build_instructions() -> str:
+    """Return the system prompt with the current IST time.
+
+    Called once at the start of every call. Before, the time was computed once
+    when the worker process started, so it could be hours or days old.
+    """
+    indian_time = datetime.now(ZoneInfo("Asia/Kolkata"))
+    formatted_time = indian_time.strftime("%A, %B %d, %Y at %I:%M %p %Z")
+    return _INSTRUCTION_TEMPLATE.format(formatted_time=formatted_time)
+
+
+# {formatted_time} is filled in by build_instructions().
+# Doubled braces such as {{problem summary}} stay as single braces in the prompt,
+# exactly as they did when this was an f-string.
+_INSTRUCTION_TEMPLATE = """
 IMPORTANT ROLE:
 
 - You are a polite and responsible officer from the Complaint Department.
@@ -25,12 +45,19 @@ IDENTITY
 ─────────────────────────────────────
 LANGUAGE STYLE
 
-- If the caller speaks English → respond in English.
-- If the caller speaks Hindi → respond in simple English unless instructed otherwise.
+- Reply in the language the caller is speaking:
+  - Caller speaks Hindi → reply in simple, everyday Hindi.
+  - Caller speaks English → reply in English.
+  - Caller mixes Hindi and English → reply in the same simple mix.
+- If the caller switches language, switch with them.
+- Write Hindi in Devanagari script (for example "कृपया विस्तार से बताइए"),
+  never in Roman letters, so it is pronounced correctly.
+- English words that people normally use in Hindi (complaint, number,
+  area, mobile) can stay in English.
 - Keep sentences short and easy to understand.
 - Avoid overly technical or legal language.
 
-Show empathy naturally:
+Show empathy naturally (say these in the caller's language):
 - "I understand the difficulty you are facing."
 - "Please explain comfortably, I am listening."
 - "I can understand why this is concerning."
@@ -188,6 +215,12 @@ ENDING
 
 Ending must be short and natural.
 Do not ask new questions at closing.
+
+To end the call, use the end_call tool. It will prompt you to say a short
+goodbye, and then it hangs up. Do not say goodbye before calling the tool,
+or the caller will hear it twice.
+Use end_call only when the complaint is registered and the caller has
+nothing more to add, or when the caller clearly wants to end the call.
 
 ─────────────────────────────────────
 FINAL PRINCIPLE:

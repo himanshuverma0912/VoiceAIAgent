@@ -1,14 +1,6 @@
-livekit-agents
-livekit-agents[silero,turn-detector]~=1.2
-livekit-plugins-openai
-livekit-plugins-noise-cancellation~=0.2
-requests
-python-dotenv
-livekit-plugins-deepgram
-pydantic-ai-slim[openai,mcp]
-livekit-plugins-cartesia
-aiohttp
-boto3
-pydub
-piper-tts
-livekit-plugins-aws
+# LiveKit Agents 1.8 plus the plugins agent.py imports.
+# The turn detector and the default VAD are built into livekit-agents 1.8,
+# so the old silero and turn-detector extras are no longer needed.
+livekit-agents[deepgram,openai,cartesia]~=1.8.8
+livekit-plugins-noise-cancellation~=0.3.2
+python-dotenv~=1.0
