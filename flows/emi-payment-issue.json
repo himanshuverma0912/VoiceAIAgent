@@ -122,8 +122,8 @@
     },
     "closing": {
       "type": "end",
-      "instructions": "Briefly recap what will happen next. If the caller asks anything else about their loan, say the team will help them on the call back. Do not ask new questions.",
-      "goodbye": "Thank the caller for calling Demo Finance and say goodbye, in the language they are speaking."
+      "instructions": "In one or two short sentences, recap what will happen next for the caller, based on what was agreed in this call.",
+      "goodbye": "Then thank them for calling Demo Finance and say goodbye, in the language they are speaking."
     }
   }
 }

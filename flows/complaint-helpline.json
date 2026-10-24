@@ -77,18 +77,18 @@
     "register": {
       "type": "agent",
       "on_enter": "speak",
-      "instructions": "Register the complaint:\n1. Briefly confirm the details: {{issue_summary}}, for {{full_name}}, in {{locality}}, {{city}}.\n2. Then say the complaint is registered on {{now_ist}} and give a reference number: \"CMP-\" followed by 4 random digits (for example CMP-4827). Say the number once, clearly, and do not repeat it.\n(Demo only: this number is not stored anywhere.)",
+      "instructions": "Register the complaint:\n1. Briefly confirm the details: {{issue_summary}}, for {{full_name}}, in {{locality}}, {{city}}.\n2. Then say the complaint is registered on {{now_ist}} and give a reference number: \"CMP-\" followed by 4 random digits (for example CMP-4827). Say the number once, clearly, and do not repeat it.\n3. Ask if there is anything else. If the caller asks what happens next, answer briefly: the complaint will be forwarded to the concerned department, and further action will be taken as per their process. Do not guarantee any outcome.\n(Demo only: this number is not stored anywhere.)",
       "transitions": [
         {
           "to": "closing",
-          "when": "You have told the caller their reference number."
+          "when": "You have given the reference number and the caller has nothing more to ask (for example they say no, thank you, or okay)."
         }
       ]
     },
     "closing": {
       "type": "end",
-      "instructions": "If the caller asks what happens next, answer briefly: the complaint will be forwarded to the concerned department, and further action will be taken as per their process. Do not guarantee any outcome.\nKeep the ending short and natural, and do not ask new questions.",
-      "goodbye": "Thank the caller for contacting the Complaint Department, tell them their concern has been recorded, and say goodbye, in the language they are speaking."
+      "instructions": "Tell the caller, in one or two short sentences, that their concern has been recorded and will be forwarded to the concerned department.",
+      "goodbye": "Then thank them for contacting the Complaint Department and say goodbye, in the language they are speaking."
     }
   }
 }

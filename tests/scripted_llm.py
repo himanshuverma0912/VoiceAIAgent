@@ -33,12 +33,37 @@ class ScriptedLLM(llm.LLM):
     def model(self) -> str:
         return "scripted"
 
-    def chat(self, *, chat_ctx, tools=None, conn_options=DEFAULT_API_CONNECT_OPTIONS, **kwargs):
-        return _ScriptedStream(self, chat_ctx=chat_ctx, tools=tools or [], conn_options=conn_options)
+    def chat(self, *, chat_ctx, tools=None, conn_options=DEFAULT_API_CONNECT_OPTIONS, tool_choice=None, **kwargs):
+        stream = _ScriptedStream(self, chat_ctx=chat_ctx, tools=tools or [], conn_options=conn_options)
+        stream.forced_tool = (
+            tool_choice["function"]["name"] if isinstance(tool_choice, dict) and "function" in tool_choice else None
+        )
+        return stream
 
 
 class _ScriptedStream(llm.LLMStream):
+    forced_tool: str | None = None
+
     async def _run(self) -> None:
+        if self.forced_tool:
+            # Like a real LLM given a named tool_choice: it must call that tool.
+            self._llm.requests.append({"step": "forced", "instructions": "", "tools": [self.forced_tool]})
+            self._call(self.forced_tool, "{}")
+            return
+        await self._scripted()
+
+    def _call(self, name: str, args: str) -> None:
+        self._event_ch.send_nowait(
+            llm.ChatChunk(
+                id=str(uuid.uuid4()),
+                delta=llm.ChoiceDelta(
+                    role="assistant",
+                    tool_calls=[llm.FunctionToolCall(name=name, arguments=args, call_id=f"call_{uuid.uuid4().hex[:8]}")],
+                ),
+            )
+        )
+
+    async def _scripted(self) -> None:
         items = self._chat_ctx.items
         instructions = "\n".join(
             i.text_content or "" for i in items if i.type == "message" and i.role in ("system", "developer")
@@ -55,19 +80,7 @@ class _ScriptedStream(llm.LLMStream):
                 if name not in tools:
                     self._say(f"[{step}] NO TOOL {name}; available: {sorted(tools)}")
                     return
-                self._event_ch.send_nowait(
-                    llm.ChatChunk(
-                        id=str(uuid.uuid4()),
-                        delta=llm.ChoiceDelta(
-                            role="assistant",
-                            tool_calls=[
-                                llm.FunctionToolCall(
-                                    name=name, arguments=args or "{}", call_id=f"call_{uuid.uuid4().hex[:8]}"
-                                )
-                            ],
-                        ),
-                    )
-                )
+                self._call(name, args or "{}")
                 return
         self._say(f"[{step}] ok")
 

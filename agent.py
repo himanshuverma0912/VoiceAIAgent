@@ -171,7 +171,12 @@ async def entrypoint(ctx: agents.JobContext) -> None:
             # costs nothing for an agent hosted on EC2.
             turn_detection=inference.TurnDetector(version="v1-mini"),
             endpointing={
-                "min_delay": 0.3,  # wait after the caller sounds finished
+                # Wait after the caller sounds finished. 0.6 s (not 0.3 s) because
+                # speech-to-text goes through LiteLLM, and on real calls the transcript
+                # sometimes arrived after the turn was already committed, so the LLM
+                # answered half a sentence ("transcript arrives after turn has been
+                # committed" in the logs).
+                "min_delay": 0.6,
                 "max_delay": 2.5,  # longest wait when the caller sounds mid-sentence
             },
             interruption={

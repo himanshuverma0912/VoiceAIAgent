@@ -14,7 +14,9 @@ collect  Collects named fields from the caller, one after another, then moves
          to "next". Fields are either built-in (name, phone, email, address,
          date_of_birth, digits) or custom (described in plain words). The
          caller can go back and correct an earlier answer.
-end      Final step: answers any last question, says goodbye and hangs up.
+end      Final step: says its final words and the goodbye, then hangs up.
+         It doesn't wait for the caller, so handle "anything else?" in the
+         node before it.
 
 Variables
 ---------
@@ -169,7 +171,7 @@ class CollectNode(_Strict):
 
 class EndNode(_Strict):
     type: Literal["end"]
-    instructions: str = Field(min_length=1, description="What to say or answer before ending")
+    instructions: str = Field(min_length=1, description="The final words to say before hanging up")
     goodbye: str = Field(
         default="Thank the caller briefly, in the language they are speaking, and say goodbye.",
         description="How to say goodbye just before hanging up",
