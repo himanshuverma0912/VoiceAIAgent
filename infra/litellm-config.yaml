@@ -1,0 +1,18 @@
+# Model aliases the agent can ask for. The agent only knows the alias
+# (LLM_MODEL=voice-fast). To use a different real model, change it here and run
+# `docker compose restart litellm`; the agent needs no redeploy.
+model_list:
+  - model_name: voice-fast
+    litellm_params:
+      model: openai/gpt-4o-mini
+      api_key: os.environ/OPENAI_API_KEY
+
+litellm_settings:
+  # Don't pass message or response content to any logging callbacks.
+  turn_off_message_logging: true
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+  database_url: os.environ/DATABASE_URL
+  # Spend logs keep counts and cost only, never what was said.
+  store_prompts_in_spend_logs: false

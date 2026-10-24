@@ -6,6 +6,7 @@ Production start command (see Dockerfile):
 
 import os
 
+import aiohttp
 from dotenv import load_dotenv
 
 load_dotenv(".env")
@@ -18,6 +19,7 @@ from livekit.agents import (
     TurnHandlingOptions,
     inference,
     room_io,
+    utils,
 )
 from livekit.agents.beta.tools import EndCallTool
 from livekit.plugins import cartesia, deepgram, noise_cancellation, openai
@@ -31,6 +33,71 @@ AGENT_NAME = "VoiceAIAgentInbound"
 # Cartesia voice used for replies. Set CARTESIA_VOICE_ID in .env to a Hindi
 # voice from the Cartesia voice library; the default is the voice used before.
 CARTESIA_VOICE_ID = os.getenv("CARTESIA_VOICE_ID", "9626c31c-bec5-4cca-baa8-f8ba9e84c8bc")
+
+# LiteLLM gateway. When LITELLM_URL is set (e.g. http://litellm:4000), the LLM and
+# Deepgram speech-to-text both go through LiteLLM with one LiteLLM key, so usage
+# and cost are tracked in one place:
+#   LLM -> {LITELLM_URL}/v1 using a model alias (e.g. "voice-fast"); which real
+#          model sits behind the alias is set in infra/litellm-config.yaml.
+#   STT -> {LITELLM_URL}/deepgram/v1/listen, LiteLLM's streaming Deepgram pass-through.
+# Cartesia text-to-speech is not supported by LiteLLM, so it stays direct.
+# When LITELLM_URL isn't set, the agent calls OpenAI and Deepgram directly as
+# before (handy for rollback).
+LITELLM_URL = (os.getenv("LITELLM_URL") or "").rstrip("/") or None
+LLM_MODEL = os.getenv("LLM_MODEL", "voice-fast" if LITELLM_URL else "gpt-4o-mini")
+
+
+class _BearerAuthSession:
+    """Wraps an aiohttp session for the Deepgram plugin when it talks to LiteLLM.
+
+    The Deepgram plugin always sends "Authorization: Token <key>" (Deepgram's own
+    format), but LiteLLM only accepts "Authorization: Bearer <key>". This rewrites
+    that one header and passes everything else straight through.
+    """
+
+    def __init__(self, session: aiohttp.ClientSession) -> None:
+        self._session = session
+
+    @staticmethod
+    def _bearer(headers: dict | None) -> dict:
+        headers = dict(headers or {})
+        auth = headers.get("Authorization", "")
+        if auth.startswith("Token "):
+            headers["Authorization"] = "Bearer " + auth[len("Token ") :]
+        return headers
+
+    def ws_connect(self, url, *, headers=None, **kwargs):
+        return self._session.ws_connect(url, headers=self._bearer(headers), **kwargs)
+
+    def post(self, url, *, headers=None, **kwargs):
+        return self._session.post(url, headers=self._bearer(headers), **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self._session, name)
+
+
+def build_llm() -> openai.LLM:
+    if LITELLM_URL:
+        return openai.LLM(
+            model=LLM_MODEL,
+            base_url=f"{LITELLM_URL}/v1",
+            api_key=os.environ["LITELLM_API_KEY"],
+            temperature=0,
+        )
+    return openai.LLM(model=LLM_MODEL, temperature=0)
+
+
+def build_stt() -> deepgram.STT:
+    # Nova-3 Hindi also copes with Hinglish (Hindi mixed with English words).
+    if LITELLM_URL:
+        return deepgram.STT(
+            model="nova-3",
+            language="hi",
+            base_url=f"{LITELLM_URL}/deepgram/v1/listen",
+            api_key=os.environ["LITELLM_API_KEY"],
+            http_session=_BearerAuthSession(utils.http_context.http_session()),
+        )
+    return deepgram.STT(model="nova-3", language="hi")
 
 
 class Assistant(Agent):
@@ -63,9 +130,8 @@ server = AgentServer(drain_timeout=900)
 @server.rtc_session(agent_name=AGENT_NAME)
 async def entrypoint(ctx: agents.JobContext) -> None:
     session = AgentSession(
-        # Nova-3 Hindi also copes with Hinglish (Hindi mixed with English words).
-        stt=deepgram.STT(model="nova-3", language="hi"),
-        llm=openai.LLM(model="gpt-4o-mini", temperature=0),
+        stt=build_stt(),
+        llm=build_llm(),
         # Your own Cartesia key (CARTESIA_API_KEY) instead of LiveKit Inference credits.
         # word_timestamps=False: Cartesia only returns word timings for en/de/es/fr,
         # and a phone call doesn't need them.
