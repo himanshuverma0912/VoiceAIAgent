@@ -1,0 +1,7 @@
+# Secrets: never commit
+.env
+infra/.env
+
+# Local Python environment
+.venv/
+__pycache__/

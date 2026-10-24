@@ -64,13 +64,22 @@ jobs:
             # Containers to drain afterwards (the very first one is called "inboundagent").
             OLD=$(docker ps --filter "name=^inboundagent" --format '{{.Names}}' | grep -vx "$NEW" || true)
 
+            # Join the platform network (from infra/docker-compose.yml) when it
+            # exists, so the agent can reach LiteLLM at http://litellm:4000.
+            NET_ARGS=""
+            if docker network inspect voice-platform >/dev/null 2>&1; then
+              NET_ARGS="--network voice-platform"
+            fi
+
             # No host port is published (the old setup used -p 8081:8081), so the
             # old and new containers can run at the same time. --stop-timeout makes
             # any `docker stop` on this container wait for the drain by default.
+            # shellcheck disable=SC2086
             docker run -d \
               --name "$NEW" \
               --restart unless-stopped \
               --stop-timeout 900 \
+              $NET_ARGS \
               --env-file /home/ubuntu/VoiceAIAgent/.env \
               "$IMAGE" || exit 1
 
