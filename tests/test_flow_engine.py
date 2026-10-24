@@ -57,6 +57,9 @@ class Harness:
 async def settle(session: AgentSession) -> None:
     """Wait until the session is idle and no handoff is still in progress."""
     for _ in range(300):
+        if session._is_closing():  # the call has ended (e.g. end_call ran): nothing to wait for
+            await asyncio.sleep(0.3)
+            return
         try:
             await session.wait_for_idle()
         except ActivityClosedError:  # an activity is mid-handoff; try again
@@ -81,6 +84,8 @@ async def converse(h: Harness, messages: list[str]) -> list:
         await session.start(start_agent(h.state))
         await settle(session)
         for msg in messages:
+            if session._is_closing():
+                break
             await asyncio.wait_for(session.run(user_input=msg), 15)
             await asyncio.wait_for(settle(session), 20)
         return list(session.history.items)
@@ -298,3 +303,76 @@ async def test_caller_hanging_up_mid_collect_does_not_hand_off(caplog):
     assert ("flow field asked", "full_name") in fields
     assert ("flow field collected", "full_name") in fields
     assert ("flow field asked", "mobile_number") in fields
+
+
+async def test_caller_can_end_call_in_the_middle_of_a_question():
+    """Regression test: on a real call the caller said "my issue got resolved" while being
+    asked their name, and the agent kept asking because end_call wasn't offered there."""
+    h = Harness("complaint-helpline.json")
+    await converse(
+        h,
+        [
+            "Street light kharab hai",
+            call("go_to_collect_details", issue_category="electricity", issue_summary="Street light not working"),
+            call("end_call"),  # "actually my issue got resolved"
+        ],
+    )
+    assert h.ended and "Acknowledge what the caller said" in h.ended[0]
+    name_question = [r for r in h.llm.requests if "update_name" in r["tools"]][0]
+    assert "end_call" in name_question["tools"]
+    assert "no longer need help" in name_question["instructions"]
+
+
+async def test_every_kind_of_question_offers_end_call():
+    # Custom field (complaint: city) and keypad digits (EMI: last 4 digits).
+    h = Harness("complaint-helpline.json")
+    await converse(
+        h,
+        [
+            "x",
+            call("go_to_collect_details", issue_category="other", issue_summary="x"),
+            call("update_name", first_name="A", last_name="B"),
+            call("update_phone_number", phone_number=CALLER),
+        ],
+    )
+    city = [r for r in h.llm.requests if "record_city" in r["tools"]][0]
+    assert "end_call" in city["tools"] and "no longer need help" in city["instructions"]
+
+    e = Harness("emi-payment-issue.json")
+    await converse(e, [call("update_dob", year=1990, month=5, day=14)])
+    digits = [r for r in e.llm.requests if "record_inputs" in r["tools"]][0]
+    assert "end_call" in digits["tools"] and "no longer need help" in digits["instructions"]
+
+
+async def test_real_end_call_tool_hangs_up_from_inside_a_question(monkeypatch):
+    """Uses LiveKit's real EndCallTool (not the stand-in) with a stand-in job, to check
+    the session really shuts down and the room is deleted when ending mid-question."""
+    from livekit.agents.beta.tools import end_call as end_call_module
+
+    events: list[str] = []
+
+    class FakeJob:
+        def add_shutdown_callback(self, cb):
+            events.append("room will be deleted")
+
+        def shutdown(self, reason: str = ""):
+            events.append("job shutdown")
+
+        async def delete_room(self, *a, **k):
+            events.append("room deleted")
+
+    monkeypatch.setattr(end_call_module, "get_job_context", lambda: FakeJob())
+    h = Harness("complaint-helpline.json")
+    from flow_engine.runtime import default_end_call
+
+    h.state.end_call = default_end_call  # the real EndCallTool
+    await converse(
+        h,
+        [
+            "Street light kharab hai",
+            call("go_to_collect_details", issue_category="electricity", issue_summary="x"),
+            call("end_call"),
+        ],
+    )
+    assert "room will be deleted" in events and "job shutdown" in events
+    assert h.state.path == ["listen_issue", "collect_details"]

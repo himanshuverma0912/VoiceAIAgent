@@ -59,6 +59,17 @@ from .spec import (
 
 logger = logging.getLogger("flow_engine")
 
+# When the caller wants out, at any step (including in the middle of a question).
+EXIT_RULE = (
+    "If the caller says they no longer need help (for example their problem is already "
+    "solved) or clearly wants to end the call, use the end_call tool right away instead "
+    "of continuing."
+)
+EXIT_GOODBYE = (
+    "Acknowledge what the caller said, thank them briefly, in the language they are "
+    "speaking, and say goodbye."
+)
+
 IST = ZoneInfo("Asia/Kolkata")
 NOT_PROVIDED = "(not provided)"
 
@@ -112,9 +123,7 @@ def compose_instructions(state: CallState, node_id: str, body: str) -> str:
             "Rules you must always follow:\n" + "\n".join(f"- {state.render(g)}" for g in flow.guardrails)
         )
     if flow.allow_end_call_anywhere:
-        parts.append(
-            "If at any point the caller clearly says they want to end the call, use the end_call tool."
-        )
+        parts.append(EXIT_RULE)
     collected = {k: v for k, v in state.values.items() if v not in (None, "")}
     if collected:
         parts.append(
@@ -148,6 +157,13 @@ def start_agent(state: CallState) -> Agent:
     return build_node_agent(state, state.flow.start_node)
 
 
+def exit_tools(state: CallState) -> list[llm.Tool | llm.Toolset]:
+    """The end_call tool offered at every step, if the flow allows ending anywhere."""
+    if not state.flow.allow_end_call_anywhere:
+        return []
+    return state.end_call(EXIT_GOODBYE, "Use it when the caller no longer needs help or wants to end the call.")
+
+
 def _handoff_ctx(agent: Agent) -> llm.ChatContext:
     # The next node hears the conversation so far, but not the previous node's instructions.
     return agent.chat_ctx.copy(exclude_instructions=True)
@@ -179,10 +195,7 @@ class FlowAgent(_NodeMixin, Agent):
         self.state, self.node_id, self.node = state, node_id, node
         tools: list[llm.Tool | llm.Toolset] = [self._transition_tool(t) for t in node.transitions]
         if state.flow.allow_end_call_anywhere:
-            tools += state.end_call(
-                "Thank the caller briefly, in the language they are speaking, and say goodbye.",
-                "Only when the caller clearly wants to end the call now.",
-            )
+            tools += exit_tools(state)
         body = node.instructions
         if node.transitions:
             body += "\n\nWhen to move on: as soon as one of these conditions is met, call its tool. " \
@@ -291,22 +304,40 @@ class CustomFieldTask(AgentTask[Any]):
             self.complete(raw_arguments["value"])
 
         extra = f"\n{state.render(f.instructions)}" if f.instructions else ""
+        exit_rule = f"\n{EXIT_RULE}" if state.flow.allow_end_call_anywhere else ""
         super().__init__(
             instructions=(
                 f"Ask the caller for: {f.description}.{extra}\n"
                 "Ask one short question. If the answer is unclear, ask again briefly. "
-                f"When you have it, call record_{f.name}."
+                f"When you have it, call record_{f.name}.{exit_rule}"
             ),
             chat_ctx=chat_ctx,
-            tools=[_record],
+            tools=[_record, *exit_tools(state)],
         )
 
     async def on_enter(self) -> None:
         self.session.generate_reply()
 
 
+class _DigitsTaskWithExit(GetDtmfTask):
+    """LiveKit's keypad-digits task doesn't take extra tools, so add end_call on entry."""
+
+    def __init__(self, *, extra_tools: list, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._extra_tools = extra_tools
+
+    async def on_enter(self) -> None:
+        if self._extra_tools:
+            await self.update_tools([*self.tools, *self._extra_tools])
+        await super().on_enter()
+
+
 def _builtin_task(state: CallState, f, chat_ctx: llm.ChatContext | None) -> AgentTask:
     extra = state.render(f.instructions) if f.instructions else ""
+    tools = exit_tools(state)
+    if tools:
+        # LiveKit's built-in tasks have their own instructions, so tell them about ending too.
+        extra = f"{extra}\n{EXIT_RULE}".strip()
     if isinstance(f, BuiltinNameField):
         return GetNameTask(
             first_name=True,
@@ -314,14 +345,16 @@ def _builtin_task(state: CallState, f, chat_ctx: llm.ChatContext | None) -> Agen
             verify_spelling=f.options.verify_spelling,
             extra_instructions=extra,
             chat_ctx=chat_ctx,
+            tools=tools,
         )
     if isinstance(f, BuiltinDigitsField):
-        return GetDtmfTask(
+        return _DigitsTaskWithExit(
             num_digits=f.options.num_digits,
             ask_for_confirmation=f.options.ask_for_confirmation,
             # NOT_GIVEN, not None: the task would otherwise append the word "None".
             extra_instructions=extra or NOT_GIVEN,
             chat_ctx=chat_ctx,
+            extra_tools=tools,
         )
     task_cls = {
         "phone": GetPhoneNumberTask,
@@ -329,7 +362,7 @@ def _builtin_task(state: CallState, f, chat_ctx: llm.ChatContext | None) -> Agen
         "address": GetAddressTask,
         "date_of_birth": GetDOBTask,
     }[f.builtin]
-    return task_cls(extra_instructions=extra, chat_ctx=chat_ctx)
+    return task_cls(extra_instructions=extra, chat_ctx=chat_ctx, tools=tools)
 
 
 def _result_value(f, result: Any) -> Any:
