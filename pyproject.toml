@@ -5,3 +5,9 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = []
+
+[tool.pytest.ini_options]
+# Lets `pytest` find the flow_engine package from the repo folder.
+pythonpath = ["."]
+testpaths = ["tests"]
+asyncio_mode = "auto"

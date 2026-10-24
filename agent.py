@@ -1,9 +1,14 @@
-"""Inbound/outbound voice agent.
+"""Inbound/outbound voice agent: runs a conversation flow from flows/.
+
+The conversation itself (nodes, prompts, what to collect, how to end) lives in
+a flow file; this file only sets up the call and the speech/LLM models.
+FLOW_FILE in .env picks the flow (default: flows/complaint-helpline.json).
 
 Production start command (see Dockerfile):
     python -m livekit.agents start agent.py
 """
 
+import logging
 import os
 
 import aiohttp
@@ -13,7 +18,6 @@ load_dotenv(".env")
 
 from livekit import agents, rtc
 from livekit.agents import (
-    Agent,
     AgentServer,
     AgentSession,
     TurnHandlingOptions,
@@ -21,17 +25,18 @@ from livekit.agents import (
     room_io,
     utils,
 )
-from livekit.agents.beta.tools import EndCallTool
 from livekit.plugins import cartesia, deepgram, noise_cancellation, openai
 
-from prompts import GREETING, build_instructions
+from flow_engine import Flow, load_flow
+from flow_engine.runtime import CallState, start_agent
+
+logger = logging.getLogger("voice-agent")
 
 # Same dispatch name as before, so the existing SIP dispatch rule
 # and outbound dispatches keep reaching this agent.
 AGENT_NAME = "VoiceAIAgentInbound"
 
-# Cartesia voice used for replies. Set CARTESIA_VOICE_ID in .env to a Hindi
-# voice from the Cartesia voice library; the default is the voice used before.
+
 def _env(name: str, default: str | None = None) -> str | None:
     """Read a setting from the environment, ignoring stray spaces or a Windows
     line ending pasted into .env (a trailing space in an API key makes every
@@ -41,6 +46,12 @@ def _env(name: str, default: str | None = None) -> str | None:
     return value or default
 
 
+# The flow this agent runs. It's loaded and checked when the container starts, so
+# a broken flow file stops the deploy (the old container keeps taking calls).
+FLOW_FILE = _env("FLOW_FILE", "flows/complaint-helpline.json")
+FLOW: Flow = load_flow(FLOW_FILE)
+
+# Cartesia voice used when the flow doesn't set settings.tts_voice_id.
 CARTESIA_VOICE_ID = _env("CARTESIA_VOICE_ID", "9626c31c-bec5-4cca-baa8-f8ba9e84c8bc")
 
 # LiteLLM gateway. When LITELLM_URL is set (e.g. http://litellm:4000), the LLM and
@@ -53,7 +64,6 @@ CARTESIA_VOICE_ID = _env("CARTESIA_VOICE_ID", "9626c31c-bec5-4cca-baa8-f8ba9e84c
 # When LITELLM_URL isn't set, the agent calls OpenAI and Deepgram directly as
 # before (handy for rollback).
 LITELLM_URL = (_env("LITELLM_URL") or "").rstrip("/") or None
-LLM_MODEL = _env("LLM_MODEL", "voice-fast" if LITELLM_URL else "gpt-4o-mini")
 
 
 def _litellm_key() -> str:
@@ -92,49 +102,41 @@ class _BearerAuthSession:
         return getattr(self._session, name)
 
 
-def build_llm() -> openai.LLM:
+def build_llm(flow: Flow) -> openai.LLM:
+    s = flow.settings
     if LITELLM_URL:
+        # The flow's model alias wins; LLM_MODEL in .env is the fallback.
+        model = s.llm_model or _env("LLM_MODEL", "voice-fast")
         return openai.LLM(
-            model=LLM_MODEL,
-            base_url=f"{LITELLM_URL}/v1",
-            api_key=_litellm_key(),
-            temperature=0,
+            model=model, base_url=f"{LITELLM_URL}/v1", api_key=_litellm_key(), temperature=s.llm_temperature
         )
-    return openai.LLM(model=LLM_MODEL, temperature=0)
+    # Without LiteLLM, model aliases don't exist; use a real OpenAI model name.
+    return openai.LLM(model=_env("LLM_MODEL", "gpt-4o-mini"), temperature=s.llm_temperature)
 
 
-def build_stt() -> deepgram.STT:
+def build_stt(flow: Flow) -> deepgram.STT:
     # Nova-3 Hindi also copes with Hinglish (Hindi mixed with English words).
+    language = flow.settings.language
     if LITELLM_URL:
         return deepgram.STT(
             model="nova-3",
-            language="hi",
+            language=language,
             base_url=f"{LITELLM_URL}/deepgram/v1/listen",
             api_key=_litellm_key(),
             http_session=_BearerAuthSession(utils.http_context.http_session()),
         )
-    return deepgram.STT(model="nova-3", language="hi")
+    return deepgram.STT(model="nova-3", language=language)
 
 
-class Assistant(Agent):
-    def __init__(self) -> None:
-        # Lets the agent say goodbye and hang up by itself. delete_room=True
-        # closes the LiveKit room, which disconnects the phone call.
-        end_call = EndCallTool(
-            extra_description=(
-                "Use it after the complaint has been registered and the caller has "
-                "nothing more to add, or when the caller clearly wants to end the call."
-            ),
-            delete_room=True,
-            end_instructions=(
-                "Thank the caller briefly, in the language they are speaking, and say goodbye."
-            ),
-        )
-        super().__init__(
-            # Built when the call starts, so the IST time in the prompt is current.
-            instructions=build_instructions(),
-            tools=end_call.tools,
-        )
+def build_tts(flow: Flow) -> cartesia.TTS:
+    s = flow.settings
+    # Cartesia takes a two-letter language; for multilingual flows speak Hindi by default.
+    language = "hi" if s.language == "multi" else s.language[:2]
+    # word_timestamps=False: Cartesia only returns word timings for en/de/es/fr,
+    # and a phone call doesn't need them.
+    return cartesia.TTS(
+        model="sonic-3", voice=s.tts_voice_id or CARTESIA_VOICE_ID, language=language, word_timestamps=False
+    )
 
 
 # drain_timeout: when Docker sends SIGTERM during a deploy, the server stops
@@ -145,15 +147,24 @@ server = AgentServer(drain_timeout=900)
 
 @server.rtc_session(agent_name=AGENT_NAME)
 async def entrypoint(ctx: agents.JobContext) -> None:
+    flow = FLOW
+
+    # Wait for the caller (the SIP participant) to read their phone numbers.
+    await ctx.connect()
+    caller = await ctx.wait_for_participant()
+    attrs = caller.attributes or {}
+    state = CallState(
+        flow=flow,
+        caller_number=attrs.get("sip.phoneNumber", ""),
+        dialed_number=attrs.get("sip.trunkPhoneNumber", ""),
+    )
+    logger.info("call started", extra={"flow_id": flow.flow_id})
+
     session = AgentSession(
-        stt=build_stt(),
-        llm=build_llm(),
-        # Your own Cartesia key (CARTESIA_API_KEY) instead of LiveKit Inference credits.
-        # word_timestamps=False: Cartesia only returns word timings for en/de/es/fr,
-        # and a phone call doesn't need them.
-        tts=cartesia.TTS(
-            model="sonic-3", voice=CARTESIA_VOICE_ID, language="hi", word_timestamps=False
-        ),
+        stt=build_stt(flow),
+        llm=build_llm(flow),
+        tts=build_tts(flow),
+        userdata=state,
         turn_handling=TurnHandlingOptions(
             # Audio-based end-of-turn model: listens to how the caller speaks, not just
             # for silence. "v1-mini" runs inside this container (supports Hindi), so it
@@ -174,12 +185,14 @@ async def entrypoint(ctx: agents.JobContext) -> None:
         ),
     )
 
+    # The flow's start node becomes the first agent; it plays the flow's greeting.
     await session.start(
         room=ctx.room,
-        agent=Assistant(),
+        agent=start_agent(state),
         # Don't upload this call's audio, transcript, traces or logs to LiveKit Cloud.
         record=False,
         room_options=room_io.RoomOptions(
+            participant_identity=caller.identity,
             # When the caller hangs up the session closes; deleting the room then
             # ends this job instead of leaving it running.
             delete_room_on_close=True,
@@ -192,6 +205,3 @@ async def entrypoint(ctx: agents.JobContext) -> None:
             ),
         ),
     )
-
-    # The caller can't interrupt the greeting, so they always hear it fully.
-    await session.say(GREETING, allow_interruptions=False)
