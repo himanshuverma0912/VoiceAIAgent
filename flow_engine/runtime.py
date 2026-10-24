@@ -11,8 +11,8 @@ becomes a LiveKit agent when the conversation reaches it:
                      field (LiveKit's prebuilt tasks for built-in fields, a
                      small custom task for the rest), saves the answers, then
                      hands off to the node in "next".
-    end node      -> EndAgent: answers a last question, then the end_call tool
-                     says goodbye and hangs up.
+    end node      -> EndAgent: says the node's final words plus the goodbye,
+                     then hangs up (always; it doesn't wait for the caller).
 
 Every node's instructions are built the same way: persona, guardrails,
 values collected so far, then the node's own instructions, with
@@ -234,25 +234,32 @@ class FlowAgent(_NodeMixin, Agent):
 
 
 class EndAgent(_NodeMixin, Agent):
+    """Says the node's final words and hangs up, every time.
+
+    Ending doesn't depend on the LLM deciding to call end_call: on entering the
+    node, end_call is forced. Its result tells the LLM what to say (the node's
+    instructions plus the goodbye); the call is hung up once that's spoken.
+    (Waiting for the caller to talk after a goodbye left calls open: callers
+    just wait silently for the line to drop.)
+    """
+
     def __init__(self, state: CallState, node_id: str, node: EndNode, chat_ctx: llm.ChatContext | None) -> None:
         self.state, self.node_id, self.node = state, node_id, node
-        body = (
-            node.instructions
-            + "\n\nWhen the caller has nothing more to ask, or says goodbye, call the end_call tool."
+        final_words = (
+            f"{state.render(node.instructions).strip()}\n"
+            f"{state.render(node.goodbye).strip()}\n"
+            "Say this as one short final message; the call ends right after it."
         )
         super().__init__(
-            instructions=compose_instructions(state, node_id, body),
-            tools=state.end_call(
-                state.render(node.goodbye),
-                "Use it once the caller has nothing more to ask or says goodbye.",
-            ),
+            instructions=compose_instructions(state, node_id, node.instructions),
+            tools=state.end_call(final_words, "Ends the call after the final message."),
             chat_ctx=chat_ctx,
         )
 
     async def on_enter(self) -> None:
         self._entered()
         await self._greet_once()
-        self.session.generate_reply()
+        self.session.generate_reply(tool_choice={"type": "function", "function": {"name": "end_call"}})
 
 
 # ── Collect node ──────────────────────────────────────────────────────────────
@@ -358,6 +365,8 @@ class CollectAgent(_NodeMixin, Agent):
 
     def _make_task(self, f) -> Callable[[], AgentTask]:
         def factory() -> AgentTask:
+            # Field names only, never the caller's answers (nothing said is logged).
+            logger.info("flow field asked", extra={"node": self.node_id, "field": f.name})
             ctx = self.chat_ctx.copy(exclude_instructions=True)
             if isinstance(f, CustomField):
                 return CustomFieldTask(self.state, f, ctx)
@@ -381,15 +390,28 @@ class CollectAgent(_NodeMixin, Agent):
             # the collected values are passed on explicitly anyway.
             summarize_chat_ctx=False,
             return_exceptions=True,
+            on_task_completed=self._on_field_done,
         )
         for f in self.node.fields:
             group.add(self._make_task(f), id=f.name, description=self._describe(f))
         result = await group
 
+        if self.session._is_closing():
+            # The caller hung up (or the call ended) while this step was still running.
+            logger.info("flow call ended", extra={"node": self.node_id})
+            return
+
         for f in self.node.fields:
             self.state.values[f.name] = _result_value(f, result.task_results.get(f.name))
         logger.info("flow transition", extra={"from": self.node_id, "to": self.node.next})
         self.session.update_agent(build_node_agent(self.state, self.node.next, _handoff_ctx(self)))
+
+    async def _on_field_done(self, ev) -> None:
+        ok = not isinstance(ev.result, Exception)
+        logger.info(
+            "flow field collected" if ok else "flow field not collected",
+            extra={"node": self.node_id, "field": ev.task_id},
+        )
 
     @staticmethod
     def _describe(f) -> str:

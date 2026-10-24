@@ -32,11 +32,13 @@ class Harness:
         )
         self.llm = ScriptedLLM()
 
-    def _fake_end_call(self, goodbye: str, extra: str):
-        # Same tool name and role as the real EndCallTool, but no room to delete.
+    def _fake_end_call(self, final_words: str, extra: str):
+        # Same name and behaviour as the real EndCallTool (its result tells the LLM
+        # what to say last), but it records the hang-up instead of deleting a room.
         @function_tool(name="end_call", description=f"End the call. {extra}")
-        async def end_call() -> None:
-            self.ended.append(goodbye)
+        async def end_call() -> str:
+            self.ended.append(final_words)
+            return final_words
 
         return [end_call]
 
@@ -107,8 +109,7 @@ async def test_complaint_flow_end_to_end():
             call("update_phone_number", phone_number=CALLER),
             call("record_city", value="Noida"),
             call("record_locality", value="Sector 62"),
-            call("go_to_closing"),
-            call("end_call"),
+            call("go_to_closing"),  # the caller says they have nothing more to ask
         ],
     )
 
@@ -121,10 +122,12 @@ async def test_complaint_flow_end_to_end():
         "city": "Noida",
         "locality": "Sector 62",
     }
-    assert h.ended == [
-        "Thank the caller for contacting the Complaint Department, tell them their concern has been "
-        "recorded, and say goodbye, in the language they are speaking."
-    ]
+    # Entering the end node hangs up on its own: no further caller turn was needed.
+    assert len(h.ended) == 1
+    assert "will be forwarded to the concerned department" in h.ended[0]
+    assert "say goodbye" in h.ended[0]
+    # ...and the final words were spoken after the hang-up tool ran.
+    assert history[-1].type == "message" and history[-1].role == "assistant"
 
     # The greeting is the first thing said, word for word.
     first_reply = next(i for i in history if i.type == "message" and i.role == "assistant")
@@ -181,7 +184,6 @@ async def test_emi_flow_double_debit_branch():
             "EMI do baar kat gaya",
             call("go_to_double_debit", debit_date="5 October"),
             call("go_to_closing"),
-            call("end_call"),
         ],
     )
     assert h.state.path == ["verify_customer", "identify_issue", "double_debit", "closing"]
@@ -240,3 +242,59 @@ def test_transition_tool_schema_comes_from_capture():
         "society_rwa",
         "other",
     ]
+
+
+async def test_end_node_hangs_up_without_waiting_for_the_caller():
+    """Regression test: the call used to stay open after the goodbye, because hanging
+    up waited for the caller to speak again (callers just wait for the line to drop)."""
+    h = Harness("emi-payment-issue.json")
+    history = await converse(
+        h,
+        [
+            call("update_dob", year=1990, month=5, day=14),
+            call("record_inputs", inputs=["4", "3", "2", "1"]),
+            call("go_to_callback", issue_summary="Wants to change EMI date"),
+            call("go_to_closing", callback_number=CALLER),
+            # no further caller message
+        ],
+    )
+    assert h.state.path[-1] == "closing"
+    assert len(h.ended) == 1 and "Demo Finance" in h.ended[0]
+    calls = [i for i in history if i.type == "function_call"]
+    assert calls[-1].name == "end_call"
+
+
+async def test_caller_hanging_up_mid_collect_does_not_hand_off(caplog):
+    """Regression test: on a real call the caller hung up during collect_details, and
+    the engine logged a misleading 'flow transition' to the next step."""
+    import logging
+
+    caplog.set_level(logging.INFO, logger="flow_engine")
+    h = Harness("complaint-helpline.json")
+    session = AgentSession(llm=h.llm)
+    try:
+        await session.start(start_agent(h.state))
+        await settle(session)
+        for msg in [
+            "Street light kharab hai",
+            call("go_to_collect_details", issue_category="electricity", issue_summary="Street light not working"),
+            call("update_name", first_name="Ravi", last_name="Kumar"),
+        ]:
+            await asyncio.wait_for(session.run(user_input=msg), 15)
+            await asyncio.wait_for(settle(session), 20)
+    finally:
+        await session.aclose()  # the caller hangs up while the phone number is being asked
+    await asyncio.sleep(0.2)
+
+    assert h.state.path == ["listen_issue", "collect_details"]
+    messages = [r.getMessage() for r in caplog.records if r.name == "flow_engine"]
+    assert "flow call ended" in messages
+    assert not any(
+        r.getMessage() == "flow transition" and getattr(r, "from", None) == "collect_details"
+        for r in caplog.records
+    )
+    # Per-field logs show exactly where the call was.
+    fields = [(r.getMessage(), getattr(r, "field", None)) for r in caplog.records if "field" in r.getMessage()]
+    assert ("flow field asked", "full_name") in fields
+    assert ("flow field collected", "full_name") in fields
+    assert ("flow field asked", "mobile_number") in fields
