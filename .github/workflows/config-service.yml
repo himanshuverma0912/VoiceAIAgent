@@ -1,0 +1,91 @@
+name: Config service
+
+# Tests the Go config service on every push and pull request that touches it,
+# and deploys it to EC2 on pushes to main. The voice agent has its own workflow
+# (deploy.yml); a change to one doesn't redeploy the other.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "config-service/**"
+      - "infra/docker-compose.yml"
+      - "tests/flow_conformance.json"
+      - "flows/**"
+      - ".github/workflows/config-service.yml"
+  pull_request:
+    paths:
+      - "config-service/**"
+      - "infra/docker-compose.yml"
+      - "tests/flow_conformance.json"
+      - "flows/**"
+      - ".github/workflows/config-service.yml"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      # A throwaway database for the API tests.
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: cfgtest
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: config-service/go.mod
+          cache-dependency-path: config-service/go.sum
+
+      # Includes the conformance test: the Go validator must report exactly what
+      # the Python one reports for every case in tests/flow_conformance.json.
+      - name: Vet and test
+        working-directory: config-service
+        env:
+          TEST_DATABASE_URL: postgres://postgres:test@localhost:5432/cfgtest?sslmode=disable
+        run: |
+          test -z "$(gofmt -l .)" || { echo "Run gofmt -w on:"; gofmt -l .; exit 1; }
+          go vet ./...
+          go test -count=1 ./...
+
+      - name: Docker image builds
+        run: docker build -t config-service:ci config-service
+
+  deploy:
+    needs: test
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Copies config-service/ and infra/ to /home/ubuntu on EC2. Existing files
+      # that aren't in the repo (like infra/.env) are left alone.
+      - name: Copy files to EC2
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USERNAME }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          source: "config-service,infra"
+          target: /home/ubuntu
+
+      # Rebuilds and restarts only the config service (and starts its database
+      # if needed). LiteLLM is not touched. While it restarts (a few seconds),
+      # calls use the agent's cached flow.
+      - name: Rebuild and restart
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USERNAME }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            set -e
+            cd /home/ubuntu/infra
+            docker compose up -d --build --wait config-service
+            docker compose ps config-service platform-db
+            docker image prune -f >/dev/null 2>&1 || true

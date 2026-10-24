@@ -215,5 +215,6 @@ def test_shape_errors_and_link_errors_reported_together():
     assert problems_for(change) == [
         "nodes.ask.instrucions: unknown key (check the spelling)",
         "nodes.ask.transitions[0].to: 'dnoe' is not a node",
-        "nodes.done.instructions: unknown variable {{who}}",
+        "nodes.done.instructions: unknown variable {{who}}; built-ins are caller_number, "
+        "dialed_number, now_ist, today_ist, plus any captured or collected field",
     ]

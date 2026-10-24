@@ -1,8 +1,12 @@
-"""Inbound/outbound voice agent: runs a conversation flow from flows/.
+"""Inbound/outbound voice agent: runs a conversation flow.
 
-The conversation itself (nodes, prompts, what to collect, how to end) lives in
-a flow file; this file only sets up the call and the speech/LLM models.
-FLOW_FILE in .env picks the flow (default: flows/complaint-helpline.json).
+The conversation itself (nodes, prompts, what to collect, how to end) is a flow;
+this file only sets up the call and the speech/LLM models.
+
+Which flow: at the start of each call the agent asks the config service which
+flow the dialled number runs (CONFIG_SERVICE_URL in .env), so a published change
+applies from the next call. Without the config service, or when it can't answer,
+FLOW_FILE in .env is used (default: flows/complaint-helpline.json).
 
 Production start command (see Dockerfile):
     python -m livekit.agents start agent.py
@@ -35,6 +39,7 @@ from livekit.plugins import cartesia, deepgram, noise_cancellation, openai
 
 from flow_engine import Flow, load_flow
 from flow_engine.runtime import CallState, start_agent
+from flow_engine.source import FlowSource
 
 logger = logging.getLogger("voice-agent")
 
@@ -52,10 +57,22 @@ def _env(name: str, default: str | None = None) -> str | None:
     return value or default
 
 
-# The flow this agent runs. It's loaded and checked when the container starts, so
-# a broken flow file stops the deploy (the old container keeps taking calls).
+# The fallback flow. It's loaded and checked when the container starts, so a
+# broken flow file stops the deploy (the old container keeps taking calls).
 FLOW_FILE = _env("FLOW_FILE", "flows/complaint-helpline.json")
-FLOW: Flow = load_flow(FLOW_FILE)
+FALLBACK_FLOW: Flow = load_flow(FLOW_FILE)
+
+# The config service (e.g. http://config-service:8080) and its runtime token.
+# Not set: every call runs FLOW_FILE, as before.
+FLOWS = FlowSource(
+    fallback=FALLBACK_FLOW,
+    url=_env("CONFIG_SERVICE_URL"),
+    token=_env("CONFIG_SERVICE_TOKEN"),
+    timeout=float(_env("CONFIG_SERVICE_TIMEOUT", "2")),
+    # Flow configuration only (no call data); lets a fresh job process use the
+    # last known flow if the config service is down.
+    cache_dir=_env("FLOW_CACHE_DIR", "/tmp/flow-cache"),
+)
 
 # Cartesia voice used when the flow doesn't set settings.tts_voice_id.
 CARTESIA_VOICE_ID = _env("CARTESIA_VOICE_ID", "9626c31c-bec5-4cca-baa8-f8ba9e84c8bc")
@@ -153,18 +170,25 @@ server = AgentServer(drain_timeout=900)
 
 @server.rtc_session(agent_name=AGENT_NAME)
 async def entrypoint(ctx: agents.JobContext) -> None:
-    flow = FLOW
-
     # Wait for the caller (the SIP participant) to read their phone numbers.
     await ctx.connect()
     caller = await ctx.wait_for_participant()
     attrs = caller.attributes or {}
+    # Our Vobiz number: the one dialled on inbound calls, the one we call from on
+    # outbound calls. It decides which flow runs.
+    dialed_number = attrs.get("sip.trunkPhoneNumber", "")
+    resolved = await FLOWS.flow_for(dialed_number, utils.http_context.http_session())
+    flow = resolved.flow
+
     state = CallState(
         flow=flow,
         caller_number=attrs.get("sip.phoneNumber", ""),
-        dialed_number=attrs.get("sip.trunkPhoneNumber", ""),
+        dialed_number=dialed_number,
     )
-    logger.info("call started", extra={"flow_id": flow.flow_id})
+    logger.info(
+        "call started",
+        extra={"flow_id": flow.flow_id, "flow_version": resolved.version, "flow_source": resolved.source},
+    )
 
     session = AgentSession(
         stt=build_stt(flow),

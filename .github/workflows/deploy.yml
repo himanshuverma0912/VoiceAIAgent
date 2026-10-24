@@ -4,6 +4,13 @@ on:
   push:
     branches:
       - main
+    # These have their own workflow (config-service.yml) and don't change the
+    # agent image, so pushing only them doesn't redeploy the agent.
+    paths-ignore:
+      - "config-service/**"
+      - "infra/**"
+      - "scripts/**"
+      - ".github/workflows/config-service.yml"
 
 jobs:
   build-and-deploy:
