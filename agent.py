@@ -11,6 +11,12 @@ Production start command (see Dockerfile):
 import logging
 import os
 
+import log_privacy
+
+# First thing: mask phone numbers and LiveKit's "lk.pii.*" fields in every log line
+# (ours and LiveKit's), so no personal data ends up in the container logs.
+log_privacy.install()
+
 import aiohttp
 from dotenv import load_dotenv
 

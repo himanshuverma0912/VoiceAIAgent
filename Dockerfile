@@ -26,6 +26,7 @@ COPY requirements.txt .
 RUN uv pip install --system --no-cache -r requirements.txt
 
 COPY agent.py .
+COPY log_privacy.py .
 # The generic flow engine and the flow files it runs (FLOW_FILE picks one).
 COPY flow_engine/ ./flow_engine/
 COPY flows/ ./flows/
