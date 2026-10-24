@@ -26,7 +26,9 @@ COPY requirements.txt .
 RUN uv pip install --system --no-cache -r requirements.txt
 
 COPY agent.py .
-COPY prompts.py .
+# The generic flow engine and the flow files it runs (FLOW_FILE picks one).
+COPY flow_engine/ ./flow_engine/
+COPY flows/ ./flows/
 
 # Health check endpoint of the agent server (GET / returns "OK")
 EXPOSE 8081
