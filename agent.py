@@ -32,7 +32,16 @@ AGENT_NAME = "VoiceAIAgentInbound"
 
 # Cartesia voice used for replies. Set CARTESIA_VOICE_ID in .env to a Hindi
 # voice from the Cartesia voice library; the default is the voice used before.
-CARTESIA_VOICE_ID = os.getenv("CARTESIA_VOICE_ID", "9626c31c-bec5-4cca-baa8-f8ba9e84c8bc")
+def _env(name: str, default: str | None = None) -> str | None:
+    """Read a setting from the environment, ignoring stray spaces or a Windows
+    line ending pasted into .env (a trailing space in an API key makes every
+    request fail with "Illegal header value")."""
+    value = os.getenv(name)
+    value = value.strip() if value is not None else None
+    return value or default
+
+
+CARTESIA_VOICE_ID = _env("CARTESIA_VOICE_ID", "9626c31c-bec5-4cca-baa8-f8ba9e84c8bc")
 
 # LiteLLM gateway. When LITELLM_URL is set (e.g. http://litellm:4000), the LLM and
 # Deepgram speech-to-text both go through LiteLLM with one LiteLLM key, so usage
@@ -43,8 +52,15 @@ CARTESIA_VOICE_ID = os.getenv("CARTESIA_VOICE_ID", "9626c31c-bec5-4cca-baa8-f8ba
 # Cartesia text-to-speech is not supported by LiteLLM, so it stays direct.
 # When LITELLM_URL isn't set, the agent calls OpenAI and Deepgram directly as
 # before (handy for rollback).
-LITELLM_URL = (os.getenv("LITELLM_URL") or "").rstrip("/") or None
-LLM_MODEL = os.getenv("LLM_MODEL", "voice-fast" if LITELLM_URL else "gpt-4o-mini")
+LITELLM_URL = (_env("LITELLM_URL") or "").rstrip("/") or None
+LLM_MODEL = _env("LLM_MODEL", "voice-fast" if LITELLM_URL else "gpt-4o-mini")
+
+
+def _litellm_key() -> str:
+    key = _env("LITELLM_API_KEY")
+    if not key:
+        raise RuntimeError("LITELLM_URL is set but LITELLM_API_KEY is missing from .env")
+    return key
 
 
 class _BearerAuthSession:
@@ -81,7 +97,7 @@ def build_llm() -> openai.LLM:
         return openai.LLM(
             model=LLM_MODEL,
             base_url=f"{LITELLM_URL}/v1",
-            api_key=os.environ["LITELLM_API_KEY"],
+            api_key=_litellm_key(),
             temperature=0,
         )
     return openai.LLM(model=LLM_MODEL, temperature=0)
@@ -94,7 +110,7 @@ def build_stt() -> deepgram.STT:
             model="nova-3",
             language="hi",
             base_url=f"{LITELLM_URL}/deepgram/v1/listen",
-            api_key=os.environ["LITELLM_API_KEY"],
+            api_key=_litellm_key(),
             http_session=_BearerAuthSession(utils.http_context.http_session()),
         )
     return deepgram.STT(model="nova-3", language="hi")
