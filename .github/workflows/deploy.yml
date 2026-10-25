@@ -8,6 +8,7 @@ on:
     # agent image, so pushing only them doesn't redeploy the agent.
     paths-ignore:
       - "config-service/**"
+      - "flow-studio/**"
       - "infra/**"
       - "scripts/**"
       - ".github/workflows/config-service.yml"

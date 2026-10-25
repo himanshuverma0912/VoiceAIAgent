@@ -65,6 +65,7 @@ func withTx(ctx context.Context, db *sql.DB, fn func(*sql.Tx) error) error {
 type FlowSummary struct {
 	FlowID         string     `json:"flow_id"`
 	Name           string     `json:"name"`
+	Team           string     `json:"team"` // "" until a platform admin assigns one (older flows)
 	LatestVersion  *int       `json:"latest_version"`
 	DraftUpdatedAt *time.Time `json:"draft_updated_at"`
 	DraftValid     *bool      `json:"draft_valid"`
@@ -78,21 +79,23 @@ type Draft struct {
 	UpdatedBy string          `json:"updated_by"`
 }
 
-// SaveDraft stores a draft (valid or not), creating the flow on first save.
-func (s *Store) SaveDraft(ctx context.Context, flowID, name string, spec []byte, problems []string, actor string) error {
+// SaveDraft stores a draft (valid or not). The first save creates the flow,
+// owned by team; later saves keep the flow's team.
+func (s *Store) SaveDraft(ctx context.Context, flowID, name, team string, spec []byte, problems []string, actor string) error {
 	if problems == nil {
 		problems = []string{}
 	}
 	p, _ := json.Marshal(problems)
 	return withTx(ctx, s.db, func(tx *sql.Tx) error {
 		res, err := tx.ExecContext(ctx,
-			`INSERT INTO flows (flow_id, name, created_by) VALUES ($1, $2, $3) ON CONFLICT (flow_id) DO NOTHING`,
-			flowID, name, actor)
+			`INSERT INTO flows (flow_id, name, team, created_by) VALUES ($1, $2, NULLIF($3, ''), $4)
+			 ON CONFLICT (flow_id) DO NOTHING`,
+			flowID, name, team, actor)
 		if err != nil {
 			return err
 		}
 		if created, _ := res.RowsAffected(); created == 1 {
-			if err := audit(ctx, tx, actor, "flow.create", flowID, map[string]any{"name": name}); err != nil {
+			if err := audit(ctx, tx, actor, "flow.create", flowID, map[string]any{"name": name, "team": team}); err != nil {
 				return err
 			}
 		} else if _, err := tx.ExecContext(ctx, `UPDATE flows SET name = $2 WHERE flow_id = $1`, flowID, name); err != nil {
@@ -131,7 +134,7 @@ func (s *Store) GetDraft(ctx context.Context, flowID string) (*Draft, error) {
 }
 
 const flowSummarySQL = `
-	SELECT f.flow_id, f.name,
+	SELECT f.flow_id, f.name, COALESCE(f.team, ''),
 	       (SELECT max(version) FROM flow_versions v WHERE v.flow_id = f.flow_id),
 	       d.updated_at,
 	       CASE WHEN d.flow_id IS NULL THEN NULL ELSE json_array_length(d.problems) = 0 END,
@@ -144,7 +147,7 @@ func scanSummary(row interface{ Scan(...any) error }) (FlowSummary, error) {
 	var updated sql.NullTime
 	var valid sql.NullBool
 	var numbers pq.StringArray
-	if err := row.Scan(&f.FlowID, &f.Name, &latest, &updated, &valid, &numbers); err != nil {
+	if err := row.Scan(&f.FlowID, &f.Name, &f.Team, &latest, &updated, &valid, &numbers); err != nil {
 		return f, err
 	}
 	if latest.Valid {
@@ -161,8 +164,13 @@ func scanSummary(row interface{ Scan(...any) error }) (FlowSummary, error) {
 	return f, nil
 }
 
-func (s *Store) ListFlows(ctx context.Context) ([]FlowSummary, error) {
-	rows, err := s.db.QueryContext(ctx, flowSummarySQL+` ORDER BY f.flow_id`)
+// ListFlows returns the flows of the given teams, or every flow if teams is nil.
+func (s *Store) ListFlows(ctx context.Context, teams []string) ([]FlowSummary, error) {
+	query, args := flowSummarySQL+` ORDER BY f.flow_id`, []any{}
+	if teams != nil {
+		query, args = flowSummarySQL+` WHERE f.team = ANY($1) ORDER BY f.flow_id`, []any{pq.StringArray(teams)}
+	}
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -187,6 +195,24 @@ func (s *Store) GetFlow(ctx context.Context, flowID string) (*FlowSummary, error
 		return nil, err
 	}
 	return &f, nil
+}
+
+// SetTeam gives a flow to a team (platform admins only; checked by the API).
+func (s *Store) SetTeam(ctx context.Context, flowID, team, actor string) error {
+	return withTx(ctx, s.db, func(tx *sql.Tx) error {
+		var old sql.NullString
+		err := tx.QueryRowContext(ctx, `SELECT team FROM flows WHERE flow_id = $1 FOR UPDATE`, flowID).Scan(&old)
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE flows SET team = $2 WHERE flow_id = $1`, flowID, team); err != nil {
+			return err
+		}
+		return audit(ctx, tx, actor, "flow.team", flowID, map[string]any{"from": old.String, "to": team})
+	})
 }
 
 // ── Publishing ────────────────────────────────────────────────────────────────

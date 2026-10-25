@@ -17,31 +17,44 @@ No call data is stored here: only configuration and an audit log of who changed 
    `{"flow_id": "...", "version_pin": null}`. `null` follows the latest version;
    a number pins a version (rollback).
 
-`scripts/publish-flow.sh flows/x.json [+91...]` does all three.
+`scripts/publish-flow.sh flows/x.json [+91...]` does all three (`TEAM=emi` for a new flow).
+
+## Who can call it
+
+- **People** sign in to Flow Studio through Keycloak and send its access token.
+  Their Keycloak roles and teams decide what they may do:
+
+  | Role | May |
+  |---|---|
+  | viewer (everyone) | see their teams' flows, drafts and versions |
+  | flow-editor | create flows for their teams, save drafts |
+  | flow-publisher | publish their teams' flows |
+  | platform-admin | everything in every team, phone numbers, audit log, move flows between teams |
+
+  Each flow belongs to one team. Flows of other teams answer 404.
+- **Scripts and CI** use `ADMIN_TOKEN` (acts as a platform admin).
+- **The voice agent** uses `RUNTIME_TOKEN`, which only works on `/internal/v1/resolve`.
 
 ## API
 
-Tokens: `Authorization: Bearer <token>`. `ADMIN_TOKEN` for `/v1/*`,
-`RUNTIME_TOKEN` (the agent's) for `/internal/v1/*`. The agent's token can't
-change anything.
+All `/v1` routes need `Authorization: Bearer <token>`. Through Caddy they're at
+`https://PUBLIC_HOST/api/v1/...`; `/internal` is never exposed publicly.
 
-| Method and path | What it does |
-|---|---|
-| `GET /healthz` | Up? (no token) |
-| `GET /readyz` | Up and database reachable? (no token) |
-| `POST /v1/validate` | Check a flow without saving it |
-| `GET /v1/flows` | All flows: latest version, draft valid?, numbers |
-| `GET /v1/flows/{flow_id}` | One flow's summary |
-| `PUT /v1/flows/{flow_id}/draft` | Save the draft (creates the flow the first time) |
-| `GET /v1/flows/{flow_id}/draft` | The draft and its problems |
-| `POST /v1/flows/{flow_id}/publish` | Draft becomes the next version (422 with problems if invalid) |
-| `GET /v1/flows/{flow_id}/versions` | Published versions |
-| `GET /v1/flows/{flow_id}/versions/{n}` | One version, with its flow |
-| `GET /v1/numbers` | Number → flow mapping |
-| `PUT /v1/numbers/{number}` | Map a number: `{"flow_id": "...", "version_pin": null}` |
-| `DELETE /v1/numbers/{number}` | Unmap (calls then use the agent's FLOW_FILE) |
-| `GET /v1/audit?limit=100` | Who changed what |
-| `GET /internal/v1/resolve?number=...` | For the agent: the flow a number runs now; ETag / 304 |
+| Method and path | Needs | What it does |
+|---|---|---|
+| `GET /healthz`, `GET /readyz` | none | Up? / Up and database reachable? |
+| `GET /v1/me` | signed in | Who you are: email, roles, teams |
+| `POST /v1/validate` | signed in | Check a flow without saving it |
+| `GET /v1/flows` | viewer | Your teams' flows (admins: all) |
+| `GET /v1/flows/{flow_id}` | viewer | One flow's summary |
+| `PUT /v1/flows/{flow_id}/draft[?team=x]` | flow-editor | Save the draft; the first save creates the flow in team x |
+| `GET /v1/flows/{flow_id}/draft` | viewer | The draft and its problems |
+| `POST /v1/flows/{flow_id}/publish` | flow-publisher | Draft becomes the next version (422 with problems if invalid) |
+| `GET /v1/flows/{flow_id}/versions[/{n}]` | viewer | Published versions / one version with its flow |
+| `PUT /v1/flows/{flow_id}/team` | platform-admin | `{"team": "emi"}`: give the flow to a team |
+| `GET /v1/numbers`, `PUT`/`DELETE /v1/numbers/{number}` | platform-admin | Number → flow mapping (`{"flow_id": "...", "version_pin": null}`) |
+| `GET /v1/audit?limit=100` | platform-admin | Who changed what |
+| `GET /internal/v1/resolve?number=...` | RUNTIME_TOKEN | For the agent: the flow a number runs now; ETag / 304 |
 
 Numbers are stored in E.164 (`+918045678901`); `91 80 4567 8901` and similar are accepted.
 

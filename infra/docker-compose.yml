@@ -1,5 +1,9 @@
-# Platform services that change rarely: LiteLLM (+ its Postgres) and the Go
-# config service (+ its own Postgres). Keycloak and the UI get added here later.
+# Platform services that change rarely:
+#   studio          Caddy: the only public entry point (HTTPS), serves Flow Studio
+#   keycloak        sign-in (SAML from the company directory, OIDC to Flow Studio)
+#   config-service  flows, versions, numbers (Go) + platform-db (its Postgres;
+#                   Keycloak keeps its own database in the same server)
+#   litellm         LLM + Deepgram gateway + postgres (its own Postgres)
 #
 # The voice agent is NOT in this file. It is deployed by
 # .github/workflows/deploy.yml, which starts the new container before draining
@@ -67,6 +71,10 @@ services:
       DATABASE_URL: postgres://platform:${PLATFORM_DB_PASSWORD:?set it in .env}@platform-db:5432/platform?sslmode=disable
       ADMIN_TOKEN: ${CONFIG_ADMIN_TOKEN:?set it in .env}
       RUNTIME_TOKEN: ${CONFIG_RUNTIME_TOKEN:?set it in .env}
+      # People signed in to Flow Studio send Keycloak tokens; check them against
+      # Keycloak's keys (fetched over the internal network).
+      OIDC_ISSUER: https://${PUBLIC_HOST:?set it in .env}/auth/realms/voice-platform
+      OIDC_JWKS_URL: http://keycloak:8080/auth/realms/voice-platform/protocol/openid-connect/certs
     ports:
       # Same as LiteLLM: only from the EC2 machine itself (or an SSH tunnel).
       - "127.0.0.1:8080:8080"
@@ -78,6 +86,88 @@ services:
     depends_on:
       platform-db:
         condition: service_healthy
+    logging:
+      driver: json-file
+      options: { max-size: 10m, max-file: "3" }
+    networks: [voice-platform]
+
+  # Sign-in. Browsers reach it at https://PUBLIC_HOST/auth (through studio);
+  # the admin console only at http://localhost:8180/auth through an SSH tunnel.
+  # Realms, clients and users are set up by keycloak/setup.py.
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.8.1
+    container_name: keycloak
+    restart: unless-stopped
+    command: ["start"]
+    environment:
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://platform-db:5432/keycloak
+      KC_DB_USERNAME: platform
+      KC_DB_PASSWORD: ${PLATFORM_DB_PASSWORD:?set it in .env}
+      KC_HTTP_ENABLED: "true" # TLS ends at Caddy
+      KC_HTTP_RELATIVE_PATH: /auth
+      KC_HOSTNAME: https://${PUBLIC_HOST:?set it in .env}/auth
+      KC_HOSTNAME_ADMIN: http://localhost:8180/auth
+      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true" # the config service reads keys via http://keycloak:8080
+      KC_PROXY_HEADERS: xforwarded
+      KC_HEALTH_ENABLED: "true"
+      # First start only: creates the "admin" user in the master realm.
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:?set it in .env}
+    mem_limit: 1536m # Java takes up to 70% of this for its heap
+    ports:
+      - "127.0.0.1:8180:8080"
+    healthcheck:
+      # Health is on the management port 9000 (never proxied). The image has no
+      # curl, so bash talks HTTP itself.
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/9000 && printf 'GET /auth/health/ready HTTP/1.0\\r\\n\\r\\n' >&3 && grep -q '\"UP\"' <&3"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 60s
+    depends_on:
+      keycloak-db-init:
+        condition: service_completed_successfully
+    logging:
+      driver: json-file
+      options: { max-size: 10m, max-file: "3" }
+    networks: [voice-platform]
+
+  # Creates Keycloak's database in platform-db if it isn't there yet, then exits.
+  keycloak-db-init:
+    image: postgres:16
+    restart: "no"
+    environment:
+      PGHOST: platform-db
+      PGUSER: platform
+      PGDATABASE: platform
+      PGPASSWORD: ${PLATFORM_DB_PASSWORD:?set it in .env}
+    entrypoint: ["sh", "-c"]
+    command:
+      - psql -tAc "SELECT 1 FROM pg_database WHERE datname = 'keycloak'" | grep -q 1 || psql -c "CREATE DATABASE keycloak"
+    depends_on:
+      platform-db:
+        condition: service_healthy
+    networks: [voice-platform]
+
+  # Caddy: HTTPS for PUBLIC_HOST (free certificate from Let's Encrypt, renewed
+  # automatically), serving Flow Studio and passing /api and /auth on.
+  # Needs ports 80 and 443 open in the EC2 security group.
+  studio:
+    build: ../flow-studio
+    image: voice-platform/studio:local
+    container_name: studio
+    restart: unless-stopped
+    environment:
+      PUBLIC_HOST: ${PUBLIC_HOST:?set it in .env}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - caddy_data:/data # certificates: keep them, or Let's Encrypt limits may bite
+      - caddy_config:/config
+    depends_on: [config-service, keycloak]
     logging:
       driver: json-file
       options: { max-size: 10m, max-file: "3" }
@@ -110,3 +200,5 @@ networks:
 volumes:
   postgres_data:
   platform_db_data:
+  caddy_data:
+  caddy_config:
