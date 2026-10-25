@@ -9,6 +9,14 @@
 //	RUNTIME_TOKEN  token for /internal/v1/* (the voice agent)
 //	LISTEN_ADDR    default :8080
 //
+// Sign-in for people (Flow Studio, through Keycloak). Without OIDC_ISSUER only
+// ADMIN_TOKEN works on /v1:
+//
+//	OIDC_ISSUER    issuer in the tokens, e.g. https://voiceflow.duckdns.org/auth/realms/voice-platform
+//	OIDC_JWKS_URL  where to read Keycloak's keys; default <OIDC_ISSUER>/protocol/openid-connect/certs
+//	               (on EC2 the internal http://keycloak:8080/auth/realms/voice-platform/protocol/openid-connect/certs)
+//	OIDC_AUDIENCE  default config-api
+//
 // `config-service -healthcheck` exits 0 if the service on this host is up
 // (used by Docker; the image has no curl).
 package main
@@ -29,6 +37,7 @@ import (
 	_ "github.com/lib/pq"
 
 	"github.com/himanshuverma0912/VoiceAIAgent/config-service/internal/api"
+	"github.com/himanshuverma0912/VoiceAIAgent/config-service/internal/auth"
 	"github.com/himanshuverma0912/VoiceAIAgent/config-service/internal/store"
 )
 
@@ -92,9 +101,21 @@ func run(addr string) error {
 		return err
 	}
 
+	var users *auth.Verifier
+	if issuer := strings.TrimRight(env("OIDC_ISSUER", ""), "/"); issuer != "" {
+		users = &auth.Verifier{
+			Issuer:   issuer,
+			Audience: env("OIDC_AUDIENCE", "config-api"),
+			JWKSURL:  env("OIDC_JWKS_URL", issuer+"/protocol/openid-connect/certs"),
+		}
+		slog.Info("sign-in with Keycloak enabled", "issuer", issuer, "audience", users.Audience)
+	} else {
+		slog.Warn("OIDC_ISSUER not set: only ADMIN_TOKEN can use /v1")
+	}
+
 	srv := &http.Server{
 		Addr:              addr,
-		Handler:           (&api.Server{Store: store.New(db), AdminToken: admin, RuntimeToken: runtime}).Handler(),
+		Handler:           (&api.Server{Store: store.New(db), AdminToken: admin, RuntimeToken: runtime, Users: users}).Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      15 * time.Second,

@@ -6,8 +6,9 @@
 #   export CONFIG_ADMIN_TOKEN=...            # from ~/infra/.env
 #   scripts/publish-flow.sh flows/emi-payment-issue.json               # publish only
 #   scripts/publish-flow.sh flows/emi-payment-issue.json +918045678901 # and map the number
+#   TEAM=emi scripts/publish-flow.sh flows/emi-payment-issue.json      # new flow owned by team emi
 #
-# Until the UI exists (Phase 4), this is how flow teams publish.
+# Flow teams normally use Flow Studio; this script is for admins and CI.
 set -euo pipefail
 
 FILE="${1:?usage: publish-flow.sh <flow.json> [phone number]}"
@@ -23,7 +24,9 @@ FLOW_ID=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["flow_
 echo "Flow: $FLOW_ID ($FILE)"
 
 # 1. Save as draft. Problems (if any) are listed and nothing is published.
-ANSWER=$(curl -sS --fail-with-body -X PUT "$URL/v1/flows/$FLOW_ID/draft" -H "$AUTH" \
+TEAM_QUERY=""
+if [ -n "${TEAM:-}" ]; then TEAM_QUERY="?team=$TEAM"; fi
+ANSWER=$(curl -sS --fail-with-body -X PUT "$URL/v1/flows/$FLOW_ID/draft$TEAM_QUERY" -H "$AUTH" \
   -H "Content-Type: application/json" --data-binary "@$FILE")
 if [ "$(echo "$ANSWER" | field valid)" != "True" ]; then
   echo "The flow has problems, not published:"

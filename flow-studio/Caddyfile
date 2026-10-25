@@ -1,0 +1,53 @@
+# The platform's only public entry point: HTTPS on 443 (and 80, which only
+# redirects and answers Let's Encrypt). Caddy gets and renews the certificate
+# for PUBLIC_HOST by itself.
+#
+#   https://PUBLIC_HOST/           Flow Studio (static files)
+#   https://PUBLIC_HOST/api/v1/... config service (its /internal API is NOT exposed)
+#   https://PUBLIC_HOST/auth/...   Keycloak, only /realms and /resources, as
+#                                  Keycloak's reverse-proxy guide recommends. The
+#                                  admin console stays private (SSH tunnel).
+
+{$PUBLIC_HOST} {
+	encode zstd gzip
+
+	handle_path /api/* {
+		@public path /v1/* /healthz
+		handle @public {
+			reverse_proxy {$CONFIG_SERVICE_UPSTREAM:config-service:8080}
+		}
+		respond 404
+	}
+
+	@keycloak path /auth/realms/* /auth/resources/*
+	handle @keycloak {
+		reverse_proxy {$KEYCLOAK_UPSTREAM:keycloak:8080}
+	}
+	handle /auth/* {
+		respond 404
+	}
+
+	handle {
+		header {
+			Strict-Transport-Security "max-age=31536000"
+			X-Content-Type-Options nosniff
+			X-Frame-Options DENY
+			Referrer-Policy strict-origin-when-cross-origin
+			# index.html must never be cached, so a new release shows up at once.
+			Cache-Control "no-cache"
+		}
+		root * {$STUDIO_ROOT:/srv/studio}
+		try_files {path} /index.html
+		file_server
+	}
+
+	log {
+		output stdout
+		# Paths only: query strings carry one-time sign-in and session codes.
+		format filter {
+			request>uri regexp \?.*$ ?…
+			request>headers>Authorization delete
+			request>headers>Cookie delete
+		}
+	}
+}

@@ -1,14 +1,23 @@
 // Package api is the config service's REST API.
 //
-// /v1/...           flow teams and (later) the UI: drafts, publishing, numbers.
+// /v1/...           Flow Studio and scripts: flows, drafts, publishing, numbers.
 //
-//	Needs "Authorization: Bearer <ADMIN_TOKEN>".
+//	"Authorization: Bearer <token>" where the token is either a Keycloak access
+//	token of a signed-in person (their roles and teams decide what they may do)
+//	or ADMIN_TOKEN (scripts and CI; acts as a platform admin).
 //
 // /internal/v1/...  the voice agent: which flow a number runs.
 //
 //	Needs "Authorization: Bearer <RUNTIME_TOKEN>".
 //
 // /healthz, /readyz no token.
+//
+// Who may do what:
+//
+//	viewer          see the flows of their teams (everyone signed in has it)
+//	flow-editor     create flows for their teams, save drafts
+//	flow-publisher  publish their teams' flows
+//	platform-admin  everything, in every team; phone numbers; audit log
 package api
 
 import (
@@ -25,6 +34,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/himanshuverma0912/VoiceAIAgent/config-service/internal/auth"
 	"github.com/himanshuverma0912/VoiceAIAgent/config-service/internal/flowspec"
 	"github.com/himanshuverma0912/VoiceAIAgent/config-service/internal/store"
 )
@@ -33,6 +43,7 @@ const maxBody = 1 << 20 // 1 MB; a large flow is ~20 KB
 
 var (
 	identifierRE = regexp.MustCompile(`^[a-z][a-z0-9_]{0,47}$`)
+	teamRE       = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,31}$`)
 	e164RE       = regexp.MustCompile(`^\+[1-9][0-9]{6,14}$`)
 )
 
@@ -40,6 +51,7 @@ type Server struct {
 	Store        *store.Store
 	AdminToken   string
 	RuntimeToken string
+	Users        *auth.Verifier // nil: only ADMIN_TOKEN is accepted on /v1
 }
 
 func (s *Server) Handler() http.Handler {
@@ -49,36 +61,75 @@ func (s *Server) Handler() http.Handler {
 	})
 	mux.HandleFunc("GET /readyz", s.ready)
 
-	admin := func(pattern string, h http.HandlerFunc) { mux.Handle(pattern, requireToken(s.AdminToken, "admin", h)) }
-	admin("POST /v1/validate", s.validate)
-	admin("GET /v1/flows", s.listFlows)
-	admin("GET /v1/flows/{flow_id}", s.getFlow)
-	admin("PUT /v1/flows/{flow_id}/draft", s.putDraft)
-	admin("GET /v1/flows/{flow_id}/draft", s.getDraft)
-	admin("POST /v1/flows/{flow_id}/publish", s.publish)
-	admin("GET /v1/flows/{flow_id}/versions", s.listVersions)
-	admin("GET /v1/flows/{flow_id}/versions/{version}", s.getVersion)
-	admin("GET /v1/numbers", s.listNumbers)
-	admin("PUT /v1/numbers/{number}", s.putNumber)
-	admin("DELETE /v1/numbers/{number}", s.deleteNumber)
-	admin("GET /v1/audit", s.audit)
+	v1 := func(pattern string, h http.HandlerFunc) { mux.Handle(pattern, s.authenticate(h)) }
+	v1("GET /v1/me", s.me)
+	v1("POST /v1/validate", s.validate)
+	v1("GET /v1/flows", s.listFlows)
+	v1("GET /v1/flows/{flow_id}", s.getFlow)
+	v1("PUT /v1/flows/{flow_id}/draft", s.putDraft)
+	v1("GET /v1/flows/{flow_id}/draft", s.getDraft)
+	v1("POST /v1/flows/{flow_id}/publish", s.publish)
+	v1("PUT /v1/flows/{flow_id}/team", s.setTeam)
+	v1("GET /v1/flows/{flow_id}/versions", s.listVersions)
+	v1("GET /v1/flows/{flow_id}/versions/{version}", s.getVersion)
+	v1("GET /v1/numbers", s.listNumbers)
+	v1("PUT /v1/numbers/{number}", s.putNumber)
+	v1("DELETE /v1/numbers/{number}", s.deleteNumber)
+	v1("GET /v1/audit", s.audit)
 
-	mux.Handle("GET /internal/v1/resolve", requireToken(s.RuntimeToken, "runtime", http.HandlerFunc(s.resolve)))
+	mux.Handle("GET /internal/v1/resolve", requireToken(s.RuntimeToken, http.HandlerFunc(s.resolve)))
 	return logRequests(mux)
 }
 
 // ── Middleware ────────────────────────────────────────────────────────────────
 
-type actorKey struct{}
+type principalKey struct{}
 
-// actor is who made a change, for the audit log. With only tokens it is the
-// token's role; with Keycloak (Phase 5) it becomes the signed-in user.
-func actor(r *http.Request) string {
-	a, _ := r.Context().Value(actorKey{}).(string)
-	return a
+func principal(r *http.Request) auth.Principal {
+	p, _ := r.Context().Value(principalKey{}).(auth.Principal)
+	return p
 }
 
-func requireToken(token, role string, next http.Handler) http.Handler {
+// actor is who made a change, for the audit log: the person's email, or
+// "admin-token" for scripts.
+func actor(r *http.Request) string { return principal(r).Actor() }
+
+func bearer(r *http.Request) string {
+	token, _ := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	return strings.TrimSpace(token)
+}
+
+// authenticate accepts ADMIN_TOKEN or a Keycloak access token.
+func (s *Server) authenticate(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		token := bearer(r)
+		var p auth.Principal
+		switch {
+		case token == "":
+			writeError(w, http.StatusUnauthorized, "sign in first")
+			return
+		case subtle.ConstantTimeCompare([]byte(token), []byte(s.AdminToken)) == 1:
+			p = auth.ScriptAdmin()
+		case s.Users != nil:
+			var err error
+			if p, err = s.Users.Verify(r.Context(), token); err != nil {
+				slog.Info("rejected token", "reason", err.Error())
+				writeError(w, http.StatusUnauthorized, "your sign-in has expired or isn't valid; sign in again")
+				return
+			}
+			if len(p.Roles) == 0 {
+				writeError(w, http.StatusForbidden, "your account has no Flow Studio role")
+				return
+			}
+		default:
+			writeError(w, http.StatusUnauthorized, "missing or wrong token")
+			return
+		}
+		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), principalKey{}, p)))
+	})
+}
+
+func requireToken(token string, next http.Handler) http.Handler {
 	want := []byte("Bearer " + token)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		got := []byte(r.Header.Get("Authorization"))
@@ -86,8 +137,40 @@ func requireToken(token, role string, next http.Handler) http.Handler {
 			writeError(w, http.StatusUnauthorized, "missing or wrong token")
 			return
 		}
-		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), actorKey{}, role+"-token")))
+		next.ServeHTTP(w, r)
 	})
+}
+
+func requireAdmin(w http.ResponseWriter, r *http.Request, what string) bool {
+	if !principal(r).IsAdmin() {
+		writeError(w, http.StatusForbidden, "only platform admins can "+what)
+		return false
+	}
+	return true
+}
+
+// flowFor loads a flow and checks the caller may use role on it. Flows of other
+// teams answer 404, so their names don't leak.
+func (s *Server) flowFor(w http.ResponseWriter, r *http.Request, role string) (*store.FlowSummary, bool) {
+	id, ok := flowID(w, r)
+	if !ok {
+		return nil, false
+	}
+	f, err := s.Store.GetFlow(r.Context(), id)
+	if err != nil {
+		s.fail(w, err)
+		return nil, false
+	}
+	p := principal(r)
+	if !p.IsAdmin() && (f.Team == "" || !p.InTeam(f.Team)) {
+		writeError(w, http.StatusNotFound, "not found")
+		return nil, false
+	}
+	if !p.Can(role, f.Team) {
+		writeError(w, http.StatusForbidden, fmt.Sprintf("you need the %s role for team %s", role, f.Team))
+		return nil, false
+	}
+	return f, true
 }
 
 type statusWriter struct {
@@ -225,6 +308,11 @@ func (s *Server) ready(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
 }
 
+// GET /v1/me — who is signed in, with their roles and teams (for Flow Studio).
+func (s *Server) me(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, principal(r))
+}
+
 // POST /v1/validate — check a flow without saving it (for the UI, as you type).
 func (s *Server) validate(w http.ResponseWriter, r *http.Request) {
 	body, ok := readBody(w, r)
@@ -240,7 +328,12 @@ func (s *Server) validate(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) listFlows(w http.ResponseWriter, r *http.Request) {
-	flows, err := s.Store.ListFlows(r.Context())
+	p := principal(r)
+	var teams []string // nil: every flow
+	if !p.IsAdmin() {
+		teams = p.Teams
+	}
+	flows, err := s.Store.ListFlows(r.Context(), teams)
 	if err != nil {
 		s.fail(w, err)
 		return
@@ -249,23 +342,21 @@ func (s *Server) listFlows(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) getFlow(w http.ResponseWriter, r *http.Request) {
-	id, ok := flowID(w, r)
-	if !ok {
-		return
+	if f, ok := s.flowFor(w, r, auth.RoleViewer); ok {
+		writeJSON(w, http.StatusOK, f)
 	}
-	f, err := s.Store.GetFlow(r.Context(), id)
-	if err != nil {
-		s.fail(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, f)
 }
 
 // PUT /v1/flows/{flow_id}/draft — save the flow being edited (creates the flow
 // on first save). Saving works even with problems, so work isn't lost; the
 // problems come back in the response. Publishing needs zero problems.
+// A new flow belongs to ?team=<name> (optional if you're in exactly one team).
 func (s *Server) putDraft(w http.ResponseWriter, r *http.Request) {
 	id, ok := flowID(w, r)
+	if !ok {
+		return
+	}
+	team, ok := s.draftTeam(w, r, id)
 	if !ok {
 		return
 	}
@@ -284,7 +375,7 @@ func (s *Server) putDraft(w http.ResponseWriter, r *http.Request) {
 			name = n
 		}
 	}
-	if err := s.Store.SaveDraft(r.Context(), id, name, body, problems, actor(r)); err != nil {
+	if err := s.Store.SaveDraft(r.Context(), id, name, team, body, problems, actor(r)); err != nil {
 		s.fail(w, err)
 		return
 	}
@@ -293,12 +384,43 @@ func (s *Server) putDraft(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// draftTeam checks the caller may save a draft of flow id, and returns the team
+// a new flow will belong to.
+func (s *Server) draftTeam(w http.ResponseWriter, r *http.Request, id string) (string, bool) {
+	p := principal(r)
+	if _, err := s.Store.GetFlow(r.Context(), id); err == nil {
+		_, ok := s.flowFor(w, r, auth.RoleEditor)
+		return "", ok
+	} else if !errors.Is(err, store.ErrNotFound) {
+		s.fail(w, err)
+		return "", false
+	}
+	team := r.URL.Query().Get("team")
+	if team == "" && len(p.Teams) == 1 {
+		team = p.Teams[0]
+	}
+	switch {
+	case team == "" && p.IsAdmin():
+		return "", true // a platform admin may create an unassigned flow
+	case team == "":
+		writeError(w, http.StatusBadRequest, "say which of your teams owns the new flow: ?team=<name>")
+		return "", false
+	case !teamRE.MatchString(team):
+		writeError(w, http.StatusBadRequest, "team must be lower-case letters, digits, - and _")
+		return "", false
+	case !p.Can(auth.RoleEditor, team):
+		writeError(w, http.StatusForbidden, fmt.Sprintf("you need the %s role for team %s", auth.RoleEditor, team))
+		return "", false
+	}
+	return team, true
+}
+
 func (s *Server) getDraft(w http.ResponseWriter, r *http.Request) {
-	id, ok := flowID(w, r)
+	f, ok := s.flowFor(w, r, auth.RoleViewer)
 	if !ok {
 		return
 	}
-	d, err := s.Store.GetDraft(r.Context(), id)
+	d, err := s.Store.GetDraft(r.Context(), f.FlowID)
 	if err != nil {
 		s.fail(w, err)
 		return
@@ -309,10 +431,11 @@ func (s *Server) getDraft(w http.ResponseWriter, r *http.Request) {
 // POST /v1/flows/{flow_id}/publish — the draft becomes the next version. Numbers
 // that follow the latest version use it from their next call.
 func (s *Server) publish(w http.ResponseWriter, r *http.Request) {
-	id, ok := flowID(w, r)
+	f, ok := s.flowFor(w, r, auth.RolePublisher)
 	if !ok {
 		return
 	}
+	id := f.FlowID
 	v, unchanged, err := s.Store.Publish(r.Context(), id, actor(r), func(spec []byte) []string {
 		_, problems, err := checkSpec(spec, id)
 		if err != nil {
@@ -334,12 +457,44 @@ func (s *Server) publish(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *Server) listVersions(w http.ResponseWriter, r *http.Request) {
+// PUT /v1/flows/{flow_id}/team {"team": "emi"} — give a flow to a team.
+func (s *Server) setTeam(w http.ResponseWriter, r *http.Request) {
+	if !requireAdmin(w, r, "move flows between teams") {
+		return
+	}
 	id, ok := flowID(w, r)
 	if !ok {
 		return
 	}
-	versions, err := s.Store.ListVersions(r.Context(), id)
+	body, ok := readBody(w, r)
+	if !ok {
+		return
+	}
+	var req struct {
+		Team string `json:"team"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil || !teamRE.MatchString(req.Team) {
+		writeError(w, http.StatusBadRequest, `body must be {"team": "<name>"} with a lower-case team name`)
+		return
+	}
+	if err := s.Store.SetTeam(r.Context(), id, req.Team, actor(r)); err != nil {
+		s.fail(w, err)
+		return
+	}
+	f, err := s.Store.GetFlow(r.Context(), id)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, f)
+}
+
+func (s *Server) listVersions(w http.ResponseWriter, r *http.Request) {
+	f, ok := s.flowFor(w, r, auth.RoleViewer)
+	if !ok {
+		return
+	}
+	versions, err := s.Store.ListVersions(r.Context(), f.FlowID)
 	if err != nil {
 		s.fail(w, err)
 		return
@@ -348,10 +503,11 @@ func (s *Server) listVersions(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) getVersion(w http.ResponseWriter, r *http.Request) {
-	id, ok := flowID(w, r)
+	f, ok := s.flowFor(w, r, auth.RoleViewer)
 	if !ok {
 		return
 	}
+	id := f.FlowID
 	version, err := strconv.Atoi(r.PathValue("version"))
 	if err != nil || version < 1 {
 		writeError(w, http.StatusBadRequest, "version must be a whole number from 1")
@@ -366,6 +522,9 @@ func (s *Server) getVersion(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) listNumbers(w http.ResponseWriter, r *http.Request) {
+	if !requireAdmin(w, r, "see phone numbers") {
+		return
+	}
 	numbers, err := s.Store.ListNumbers(r.Context())
 	if err != nil {
 		s.fail(w, err)
@@ -376,6 +535,9 @@ func (s *Server) listNumbers(w http.ResponseWriter, r *http.Request) {
 
 // PUT /v1/numbers/{number} {"flow_id": "...", "version_pin": null | 3}
 func (s *Server) putNumber(w http.ResponseWriter, r *http.Request) {
+	if !requireAdmin(w, r, "route phone numbers") {
+		return
+	}
 	n, ok := number(w, r.PathValue("number"))
 	if !ok {
 		return
@@ -411,6 +573,9 @@ func (s *Server) putNumber(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) deleteNumber(w http.ResponseWriter, r *http.Request) {
+	if !requireAdmin(w, r, "route phone numbers") {
+		return
+	}
 	n, ok := number(w, r.PathValue("number"))
 	if !ok {
 		return
@@ -423,6 +588,9 @@ func (s *Server) deleteNumber(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) audit(w http.ResponseWriter, r *http.Request) {
+	if !requireAdmin(w, r, "read the audit log") {
+		return
+	}
 	limit := 100
 	if v := r.URL.Query().Get("limit"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 1000 {

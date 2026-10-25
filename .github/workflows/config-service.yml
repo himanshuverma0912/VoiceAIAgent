@@ -1,21 +1,26 @@
-name: Config service
+name: Platform
 
-# Tests the Go config service on every push and pull request that touches it,
-# and deploys it to EC2 on pushes to main. The voice agent has its own workflow
-# (deploy.yml); a change to one doesn't redeploy the other.
+# The platform services on EC2: config service (Go), Keycloak and Flow Studio
+# (Caddy). Tests on every push and pull request that touches them; deploys on
+# pushes to main. The voice agent has its own workflow (deploy.yml); a change to
+# one doesn't redeploy the other.
 on:
   push:
     branches: [main]
     paths:
       - "config-service/**"
+      - "flow-studio/**"
       - "infra/docker-compose.yml"
+      - "infra/keycloak/**"
       - "tests/flow_conformance.json"
       - "flows/**"
       - ".github/workflows/config-service.yml"
   pull_request:
     paths:
       - "config-service/**"
+      - "flow-studio/**"
       - "infra/docker-compose.yml"
+      - "infra/keycloak/**"
       - "tests/flow_conformance.json"
       - "flows/**"
       - ".github/workflows/config-service.yml"
@@ -53,8 +58,13 @@ jobs:
           go vet ./...
           go test -count=1 ./...
 
-      - name: Docker image builds
-        run: docker build -t config-service:ci config-service
+      - name: Docker images build
+        run: |
+          docker build -t config-service:ci config-service
+          docker build -t studio:ci flow-studio
+
+      - name: Keycloak setup script compiles
+        run: python3 -m py_compile infra/keycloak/setup.py
 
   deploy:
     needs: test
@@ -63,20 +73,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Copies config-service/ and infra/ to /home/ubuntu on EC2. Existing files
-      # that aren't in the repo (like infra/.env) are left alone.
+      # Copies config-service/, flow-studio/ and infra/ to /home/ubuntu on EC2.
+      # Files that aren't in the repo (like infra/.env) are left alone.
       - name: Copy files to EC2
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USERNAME }}
           key: ${{ secrets.EC2_SSH_KEY }}
-          source: "config-service,infra"
+          source: "config-service,flow-studio,infra"
           target: /home/ubuntu
 
-      # Rebuilds and restarts only the config service (and starts its database
-      # if needed). LiteLLM is not touched. While it restarts (a few seconds),
-      # calls use the agent's cached flow.
+      # Rebuilds what changed and restarts only those containers; unchanged ones
+      # (LiteLLM, the databases) keep running. While the config service restarts
+      # (a few seconds), calls use the agent's cached flow.
       - name: Rebuild and restart
         uses: appleboy/ssh-action@v1.0.3
         with:
@@ -86,6 +96,16 @@ jobs:
           script: |
             set -e
             cd /home/ubuntu/infra
-            docker compose up -d --build --wait config-service
-            docker compose ps config-service platform-db
+            docker compose up -d --build
+            for C in config-service keycloak; do
+              S=starting
+              for _ in $(seq 1 60); do
+                S=$(docker inspect -f '{{.State.Health.Status}}' "$C")
+                [ "$S" = healthy ] && break
+                sleep 5
+              done
+              echo "$C: $S"
+              if [ "$S" != healthy ]; then docker logs --tail 60 "$C"; exit 1; fi
+            done
+            docker compose ps
             docker image prune -f >/dev/null 2>&1 || true
