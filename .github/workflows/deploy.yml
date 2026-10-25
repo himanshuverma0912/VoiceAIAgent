@@ -16,6 +16,13 @@ on:
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
+    # One deploy on the EC2 machine at a time. This merge touched both the agent
+    # and the platform, so both workflows ran at once and two "docker pull"s
+    # collided while unpacking the same image layer ("failed to extract layer").
+    # The second deploy now waits for the first instead.
+    concurrency:
+      group: ec2-deploy
+      cancel-in-progress: false
 
     steps:
       - name: Checkout Code
