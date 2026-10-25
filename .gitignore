@@ -5,3 +5,5 @@ infra/.env
 # Local Python environment
 .venv/
 __pycache__/
+flow-studio/node_modules/
+flow-studio/dist/

@@ -18,6 +18,7 @@ var (
 	ErrNotFound     = errors.New("not found")
 	ErrNoDraft      = errors.New("this flow has no draft")
 	ErrNotPublished = errors.New("this flow has no published version yet")
+	ErrConflict     = errors.New("someone else saved this flow since you opened it; reload to see their changes")
 )
 
 // InvalidError is returned by Publish when the draft has problems.
@@ -74,19 +75,33 @@ type FlowSummary struct {
 
 type Draft struct {
 	Spec      json.RawMessage `json:"spec"`
+	Checksum  string          `json:"checksum"` // send back as If-Match when saving
+	Layout    json.RawMessage `json:"layout"`   // canvas positions, or null
 	Problems  []string        `json:"problems"`
 	UpdatedAt time.Time       `json:"updated_at"`
 	UpdatedBy string          `json:"updated_by"`
 }
 
 // SaveDraft stores a draft (valid or not). The first save creates the flow,
-// owned by team; later saves keep the flow's team.
-func (s *Store) SaveDraft(ctx context.Context, flowID, name, team string, spec []byte, problems []string, actor string) error {
+// owned by team; later saves keep the flow's team. If expected is set, the save
+// only happens when the current draft still has that checksum (ErrConflict
+// otherwise), so two people editing at once don't overwrite each other.
+func (s *Store) SaveDraft(ctx context.Context, flowID, name, team string, spec []byte, problems []string, actor, expected string) error {
 	if problems == nil {
 		problems = []string{}
 	}
 	p, _ := json.Marshal(problems)
 	return withTx(ctx, s.db, func(tx *sql.Tx) error {
+		if expected != "" {
+			var current string
+			err := tx.QueryRowContext(ctx, `SELECT spec FROM flow_drafts WHERE flow_id = $1 FOR UPDATE`, flowID).Scan(&current)
+			if errors.Is(err, sql.ErrNoRows) || (err == nil && Checksum([]byte(current)) != expected) {
+				return ErrConflict
+			}
+			if err != nil {
+				return err
+			}
+		}
 		res, err := tx.ExecContext(ctx,
 			`INSERT INTO flows (flow_id, name, team, created_by) VALUES ($1, $2, NULLIF($3, ''), $4)
 			 ON CONFLICT (flow_id) DO NOTHING`,
@@ -117,9 +132,11 @@ func (s *Store) SaveDraft(ctx context.Context, flowID, name, team string, spec [
 func (s *Store) GetDraft(ctx context.Context, flowID string) (*Draft, error) {
 	var d Draft
 	var spec, problems string
-	err := s.db.QueryRowContext(ctx,
-		`SELECT spec, problems, updated_at, updated_by FROM flow_drafts WHERE flow_id = $1`, flowID,
-	).Scan(&spec, &problems, &d.UpdatedAt, &d.UpdatedBy)
+	var layout sql.NullString
+	err := s.db.QueryRowContext(ctx, `
+		SELECT d.spec, d.problems, d.updated_at, d.updated_by, f.layout
+		FROM flow_drafts d JOIN flows f USING (flow_id) WHERE d.flow_id = $1`, flowID,
+	).Scan(&spec, &problems, &d.UpdatedAt, &d.UpdatedBy, &layout)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -127,6 +144,11 @@ func (s *Store) GetDraft(ctx context.Context, flowID string) (*Draft, error) {
 		return nil, err
 	}
 	d.Spec = json.RawMessage(spec)
+	d.Checksum = Checksum([]byte(spec))
+	d.Layout = json.RawMessage("null")
+	if layout.Valid {
+		d.Layout = json.RawMessage(layout.String)
+	}
 	if err := json.Unmarshal([]byte(problems), &d.Problems); err != nil {
 		return nil, err
 	}
@@ -195,6 +217,19 @@ func (s *Store) GetFlow(ctx context.Context, flowID string) (*FlowSummary, error
 		return nil, err
 	}
 	return &f, nil
+}
+
+// SetLayout stores where Flow Studio draws the flow's nodes (not audited: it
+// changes nothing a caller hears).
+func (s *Store) SetLayout(ctx context.Context, flowID string, layout []byte) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE flows SET layout = $2 WHERE flow_id = $1`, flowID, string(layout))
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 // SetTeam gives a flow to a team (platform admins only; checked by the API).

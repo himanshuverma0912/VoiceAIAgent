@@ -70,6 +70,7 @@ func (s *Server) Handler() http.Handler {
 	v1("GET /v1/flows/{flow_id}/draft", s.getDraft)
 	v1("POST /v1/flows/{flow_id}/publish", s.publish)
 	v1("PUT /v1/flows/{flow_id}/team", s.setTeam)
+	v1("PUT /v1/flows/{flow_id}/layout", s.putLayout)
 	v1("GET /v1/flows/{flow_id}/versions", s.listVersions)
 	v1("GET /v1/flows/{flow_id}/versions/{version}", s.getVersion)
 	v1("GET /v1/numbers", s.listNumbers)
@@ -224,7 +225,7 @@ func (s *Server) fail(w http.ResponseWriter, err error) {
 		})
 	case errors.Is(err, store.ErrNotFound):
 		writeError(w, http.StatusNotFound, "not found")
-	case errors.Is(err, store.ErrNoDraft), errors.Is(err, store.ErrNotPublished):
+	case errors.Is(err, store.ErrNoDraft), errors.Is(err, store.ErrNotPublished), errors.Is(err, store.ErrConflict):
 		writeError(w, http.StatusConflict, err.Error())
 	default:
 		slog.Error("request failed", "error", err)
@@ -375,7 +376,7 @@ func (s *Server) putDraft(w http.ResponseWriter, r *http.Request) {
 			name = n
 		}
 	}
-	if err := s.Store.SaveDraft(r.Context(), id, name, team, body, problems, actor(r)); err != nil {
+	if err := s.Store.SaveDraft(r.Context(), id, name, team, body, problems, actor(r), strings.Trim(r.Header.Get("If-Match"), `" `)); err != nil {
 		s.fail(w, err)
 		return
 	}
@@ -389,6 +390,10 @@ func (s *Server) putDraft(w http.ResponseWriter, r *http.Request) {
 func (s *Server) draftTeam(w http.ResponseWriter, r *http.Request, id string) (string, bool) {
 	p := principal(r)
 	if _, err := s.Store.GetFlow(r.Context(), id); err == nil {
+		if r.Header.Get("If-None-Match") == "*" { // "create only" (Flow Studio's New flow)
+			writeError(w, http.StatusConflict, fmt.Sprintf("a flow called %s already exists", id))
+			return "", false
+		}
 		_, ok := s.flowFor(w, r, auth.RoleEditor)
 		return "", ok
 	} else if !errors.Is(err, store.ErrNotFound) {
@@ -455,6 +460,37 @@ func (s *Server) publish(w http.ResponseWriter, r *http.Request) {
 		"flow_id": v.FlowID, "version": v.Version, "checksum": v.Checksum, "unchanged": unchanged,
 		"published_at": v.PublishedAt, "published_by": v.PublishedBy,
 	})
+}
+
+// PUT /v1/flows/{flow_id}/layout {"positions": {"<node id>": {"x": 10, "y": 20}}}
+// — where Flow Studio draws the nodes.
+func (s *Server) putLayout(w http.ResponseWriter, r *http.Request) {
+	f, ok := s.flowFor(w, r, auth.RoleEditor)
+	if !ok {
+		return
+	}
+	body, ok := readBody(w, r)
+	if !ok {
+		return
+	}
+	var layout struct {
+		Positions map[string]struct {
+			X float64 `json:"x"`
+			Y float64 `json:"y"`
+		} `json:"positions"`
+	}
+	dec := json.NewDecoder(strings.NewReader(string(body)))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&layout); err != nil || layout.Positions == nil || len(layout.Positions) > 500 {
+		writeError(w, http.StatusBadRequest, `body must be {"positions": {"<node id>": {"x": <number>, "y": <number>}}}`)
+		return
+	}
+	clean, _ := json.Marshal(layout)
+	if err := s.Store.SetLayout(r.Context(), f.FlowID, clean); err != nil {
+		s.fail(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // PUT /v1/flows/{flow_id}/team {"team": "emi"} — give a flow to a team.

@@ -1,0 +1,477 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ApiError, api, can, type FlowSummary, type Me } from "../api";
+import { Canvas, type Selection } from "../components/Canvas";
+import { NodeEditor } from "../components/NodeEditor";
+import { PublishDialog, VersionsDialog } from "../components/Review";
+import { SettingsEditor } from "../components/SettingsEditor";
+import { toast } from "../components/ui";
+import { NODE_WIDTH, autoLayout, positionsFor, type Positions } from "../layout";
+import { Link, setLeaveGuard } from "../router";
+import {
+  NODE_TYPE_LABEL,
+  clone,
+  deleteNode,
+  groupProblems,
+  isEditable,
+  newNode,
+  problemText,
+  renameNode,
+  serialize,
+  uniqueId,
+  variablesOf,
+  type Flow,
+  type FlowNode,
+  type NodeType,
+} from "../spec";
+
+const NEW_ID: Record<NodeType, string> = { agent: "step", collect: "collect_details", end: "end_call" };
+
+export function FlowEditor({ me, flowId }: { me: Me; flowId: string }) {
+  const [summary, setSummary] = useState<FlowSummary | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [spec, setSpec] = useState<unknown>(null);
+  const [checksum, setChecksum] = useState("");
+  const [positions, setPositions] = useState<Positions>({});
+  const [dirty, setDirty] = useState(false);
+  const [layoutDirty, setLayoutDirty] = useState(false);
+  const [mode, setMode] = useState<"canvas" | "json">("canvas");
+  const [jsonText, setJsonText] = useState("");
+  const [jsonError, setJsonError] = useState<string | null>(null);
+  const [problems, setProblems] = useState<string[]>([]);
+  const [selection, setSelection] = useState<Selection>({ kind: "settings" });
+  const [saving, setSaving] = useState(false);
+  const [conflict, setConflict] = useState(false);
+  const [dialog, setDialog] = useState<null | "publish" | "versions">(null);
+
+  // ── load ──
+  useEffect(() => {
+    Promise.all([api.flow(flowId), api.draft(flowId)]).then(
+      ([s, d]) => {
+        setSummary(s);
+        setSpec(d.spec);
+        setChecksum(d.checksum);
+        setProblems(d.problems);
+        if (isEditable(d.spec)) setPositions(positionsFor(d.spec, d.layout?.positions));
+        else {
+          setMode("json");
+          setJsonText(serialize(d.spec));
+        }
+      },
+      (e) => setLoadError(e instanceof ApiError && e.status === 404 ? "This flow doesn't exist, or it belongs to another team." : (e as Error).message),
+    );
+  }, [flowId]);
+
+  const editable = !!summary && can.edit(me, summary.team);
+  const publishable = !!summary && can.publish(me, summary.team);
+  const flow = isEditable(spec) ? spec : null;
+  const unsaved = dirty || layoutDirty;
+
+  // ── unsaved changes: warn before leaving ──
+  useEffect(() => {
+    setLeaveGuard(unsaved ? () => confirm("You have unsaved changes. Leave without saving?") : null);
+    const onUnload = (e: BeforeUnloadEvent) => {
+      if (unsaved) e.preventDefault();
+    };
+    window.addEventListener("beforeunload", onUnload);
+    return () => {
+      setLeaveGuard(null);
+      window.removeEventListener("beforeunload", onUnload);
+    };
+  }, [unsaved]);
+
+  // ── check as you type (the server's rules, debounced) ──
+  const checkSeq = useRef(0);
+  useEffect(() => {
+    if (spec === null || !dirty) return;
+    const text = mode === "json" ? jsonText : serialize(spec);
+    const seq = ++checkSeq.current;
+    const timer = setTimeout(async () => {
+      try {
+        const res = await api.validate(text);
+        if (seq === checkSeq.current) setProblems(res.problems);
+      } catch (e) {
+        if (seq === checkSeq.current) setProblems([`(top level): ${(e as Error).message}`]);
+      }
+    }, 450);
+    return () => clearTimeout(timer);
+  }, [spec, jsonText, mode, dirty]);
+
+  // ── editing ──
+  /** Change the flow in place: fn gets a copy to modify (its return value is ignored). */
+  const edit = useCallback(
+    (fn: (f: Flow) => unknown) => {
+      if (!editable) return;
+      setSpec((prev: unknown) => {
+        const draft = clone(prev as Flow);
+        fn(draft);
+        return draft;
+      });
+      setDirty(true);
+    },
+    [editable],
+  );
+
+  /** Replace the whole flow with what fn returns (rename, delete). */
+  const replace = useCallback(
+    (fn: (f: Flow) => Flow) => {
+      if (!editable) return;
+      setSpec((prev: unknown) => fn(clone(prev as Flow)));
+      setDirty(true);
+    },
+    [editable],
+  );
+
+  const changeNode = (id: string) => (fn: (n: FlowNode) => unknown) =>
+    edit((f) => {
+      fn(f.nodes[id]);
+    });
+
+  const rename = (oldId: string, newId: string) => {
+    replace((f) => renameNode(f, oldId, newId));
+    setPositions((p) => {
+      const { [oldId]: pos, ...rest } = p;
+      return pos ? { ...rest, [newId]: pos } : rest;
+    });
+    setLayoutDirty(true);
+    setSelection({ kind: "node", id: newId });
+  };
+
+  const remove = (id: string) => {
+    replace((f) => deleteNode(f, id));
+    setSelection({ kind: "settings" });
+  };
+
+  const addNode = (type: NodeType) => {
+    if (!flow) return;
+    const id = uniqueId(NEW_ID[type], Object.keys(flow.nodes));
+    const near = selection.kind === "node" ? positions[selection.id] : undefined;
+    const xs = Object.values(positions);
+    const pos = near
+      ? { x: near.x + NODE_WIDTH + 80, y: near.y + 30 }
+      : { x: xs.length ? Math.max(...xs.map((p) => p.x)) + NODE_WIDTH + 80 : 40, y: xs.length ? Math.min(...xs.map((p) => p.y)) : 40 };
+    edit((f) => {
+      f.nodes[id] = newNode(type, Object.keys(f.nodes).filter((n) => f.nodes[n].type === "end"));
+    });
+    setPositions((p) => ({ ...p, [id]: pos }));
+    setLayoutDirty(true);
+    setSelection({ kind: "node", id });
+  };
+
+  const connect = (from: string, to: string) => {
+    if (!flow) return;
+    const node = flow.nodes[from];
+    if (node.type === "agent") {
+      const index = node.transitions?.length ?? 0;
+      edit((f) => {
+        const n = f.nodes[from];
+        if (n.type === "agent") n.transitions = [...(n.transitions ?? []), { to, when: "" }];
+      });
+      setSelection({ kind: "node", id: from, transition: index });
+      toast("Added a way out. Describe when to take it.");
+    } else if (node.type === "collect") {
+      edit((f) => {
+        const n = f.nodes[from];
+        if (n.type === "collect") n.next = to;
+      });
+      setSelection({ kind: "node", id: from });
+    }
+  };
+
+  const move = (id: string, pos: { x: number; y: number }) => {
+    setPositions((p) => (p[id]?.x === pos.x && p[id]?.y === pos.y ? p : { ...p, [id]: pos }));
+    if (editable) setLayoutDirty(true);
+  };
+
+  // ── canvas / JSON ──
+  const toJson = () => {
+    setJsonText(serialize(spec));
+    setJsonError(null);
+    setMode("json");
+  };
+  const toCanvas = () => {
+    if (jsonError) return toast("Fix the JSON first: " + jsonError);
+    if (!isEditable(spec)) return toast("The canvas needs a 'nodes' object whose nodes have type agent, collect or end.");
+    setPositions((p) => positionsFor(spec, p));
+    setMode("canvas");
+  };
+  const typeJson = (text: string) => {
+    setJsonText(text);
+    setDirty(true);
+    try {
+      setSpec(JSON.parse(text));
+      setJsonError(null);
+    } catch (e) {
+      setJsonError((e as Error).message);
+    }
+  };
+
+  // ── save ──
+  const save = useCallback(async (): Promise<boolean> => {
+    if (!editable || saving) return false;
+    if (mode === "json" && jsonError) {
+      toast("Fix the JSON first: " + jsonError);
+      return false;
+    }
+    setSaving(true);
+    try {
+      if (dirty) {
+        const res = await api.saveDraft(flowId, mode === "json" ? jsonText : serialize(spec), { ifMatch: checksum });
+        setChecksum(res.checksum);
+        setProblems(res.problems);
+        setDirty(false);
+        setSummary((s) => (s ? { ...s, draft_valid: res.valid, draft_updated_at: new Date().toISOString() } : s));
+        toast(res.valid ? "Draft saved" : `Draft saved with ${res.problems.length} problem${res.problems.length === 1 ? "" : "s"}`);
+      }
+      if (layoutDirty && isEditable(spec)) {
+        await api.saveLayout(flowId, positions);
+        setLayoutDirty(false);
+        if (!dirty) toast("Layout saved");
+      }
+      return true;
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 409) setConflict(true);
+      else toast((e as Error).message);
+      return false;
+    } finally {
+      setSaving(false);
+    }
+  }, [editable, saving, mode, jsonError, dirty, layoutDirty, flowId, jsonText, spec, checksum, positions]);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s") {
+        e.preventDefault();
+        save();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [save]);
+
+  const openPublish = async () => {
+    if (unsaved && !(await save())) return;
+    setDialog("publish");
+  };
+
+  // ── derived ──
+  const grouped = useMemo(() => groupProblems(problems, flow ? Object.keys(flow.nodes) : []), [problems, flow]);
+  const vars = useMemo(() => (flow ? variablesOf(flow) : []), [flow]);
+  const selectedNode = selection.kind === "node" && flow?.nodes[selection.id] ? selection : null;
+
+  if (loadError)
+    return (
+      <main className="page">
+        <div className="notice bad">{loadError}</div>
+        <Link to="/">← Back to flows</Link>
+      </main>
+    );
+  if (!summary || spec === null) return <div className="center muted">Loading flow…</div>;
+
+  const firstProblemNode = Object.keys(grouped.byNode)[0];
+
+  return (
+    <div className="editor">
+      <div className="editor-bar">
+        <Link to="/" className="link">
+          ← Flows
+        </Link>
+        <div className="title">
+          <strong>{flow?.name || summary.name}</strong>
+          <span className="faint mono">
+            {flowId} · team {summary.team || "unassigned"}
+          </span>
+        </div>
+        {summary.latest_version ? <span className="chip good">v{summary.latest_version} live</span> : <span className="chip">not published</span>}
+        {problems.length > 0 ? (
+          <button
+            className="small"
+            style={{ color: "var(--bad)", borderColor: "var(--bad)" }}
+            onClick={() => setSelection(firstProblemNode ? { kind: "node", id: firstProblemNode } : { kind: "settings" })}
+          >
+            {problems.length} problem{problems.length === 1 ? "" : "s"}
+          </button>
+        ) : (
+          <span className="chip good">no problems</span>
+        )}
+        <span className="faint" style={{ fontSize: 12.5 }}>
+          {saving ? "Saving…" : unsaved ? "Unsaved changes" : editable ? "All changes saved" : ""}
+        </span>
+        <span className="spacer" />
+        <div className="tabs" role="group" aria-label="View">
+          <button aria-pressed={mode === "canvas"} onClick={toCanvas}>
+            Canvas
+          </button>
+          <button aria-pressed={mode === "json"} onClick={toJson}>
+            JSON
+          </button>
+        </div>
+        {editable && mode === "canvas" && (
+          <>
+            <select
+              aria-label="Add a step"
+              value=""
+              style={{ width: "auto" }}
+              onChange={(e) => e.target.value && addNode(e.target.value as NodeType)}
+            >
+              <option value="">+ Add step</option>
+              {(Object.keys(NODE_TYPE_LABEL) as NodeType[]).map((t) => (
+                <option key={t} value={t}>
+                  {NODE_TYPE_LABEL[t]}
+                </option>
+              ))}
+            </select>
+            <button
+              title="Arrange the steps automatically"
+              onClick={() => {
+                if (flow) setPositions(autoLayout(flow));
+                setLayoutDirty(true);
+              }}
+            >
+              Tidy
+            </button>
+          </>
+        )}
+        <button onClick={() => setDialog("versions")}>History</button>
+        {editable && (
+          <button className={unsaved && !publishable ? "primary" : ""} disabled={!unsaved || saving} onClick={save} title="Ctrl/⌘ + S">
+            Save
+          </button>
+        )}
+        {publishable && (
+          <button className="primary" onClick={openPublish} disabled={saving}>
+            Review & publish
+          </button>
+        )}
+      </div>
+
+      <div className="editor-body">
+        <div className="canvas">
+          {!editable && (
+            <div className="notice info" style={{ position: "absolute", zIndex: 5, top: 10, left: 10, right: 10 }}>
+              View only. Editing needs the flow-editor role in team {summary.team || "(unassigned: platform admins only)"}.
+            </div>
+          )}
+          {conflict && (
+            <div className="notice warn" style={{ position: "absolute", zIndex: 6, top: 10, left: 10, right: 10 }}>
+              Someone else saved this flow since you opened it, so your save was stopped to avoid overwriting their work.{" "}
+              <button className="small" onClick={() => navigator.clipboard.writeText(mode === "json" ? jsonText : serialize(spec)).then(() => toast("Your version is on the clipboard"))}>
+                Copy my version
+              </button>{" "}
+              <button className="small" onClick={() => location.reload()}>
+                Reload theirs
+              </button>
+            </div>
+          )}
+          {mode === "canvas" && flow ? (
+            <Canvas
+              flow={flow}
+              positions={positions}
+              problemsByNode={grouped.byNode}
+              selection={selection}
+              editable={editable}
+              onSelect={setSelection}
+              onMove={move}
+              onConnect={connect}
+            />
+          ) : (
+            <textarea
+              className="json-editor"
+              aria-label="Flow JSON"
+              spellCheck={false}
+              value={jsonText}
+              readOnly={!editable}
+              onChange={(e) => typeJson(e.target.value)}
+            />
+          )}
+        </div>
+
+        <aside className="inspector">
+          {mode === "json" ? (
+            <div>
+              <div className="inspector-head">
+                <h3 className="grow">JSON</h3>
+              </div>
+              <p className="hint" style={{ marginTop: -8 }}>
+                The exact flow the agent runs. Edit it here for anything the forms don't cover; switch back to the canvas to keep
+                editing visually.
+              </p>
+              {jsonError && <div className="notice bad">Not valid JSON: {jsonError}</div>}
+              {problems.length > 0 ? (
+                <ul className="problems">
+                  {problems.map((p, i) => (
+                    <li key={i}>
+                      <strong>{problemText(p).where}</strong>: {problemText(p).what}
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                !jsonError && <div className="notice info">No problems.</div>
+              )}
+            </div>
+          ) : flow && selectedNode ? (
+            <NodeEditor
+              key={selectedNode.id}
+              flow={flow}
+              id={selectedNode.id}
+              node={flow.nodes[selectedNode.id]}
+              focusTransition={selectedNode.transition}
+              editable={editable}
+              problems={grouped.byNode[selectedNode.id] ?? []}
+              vars={vars}
+              change={changeNode(selectedNode.id)}
+              rename={(newId) => rename(selectedNode.id, newId)}
+              remove={() => remove(selectedNode.id)}
+              makeStart={() => edit((f) => (f.start_node = selectedNode.id))}
+            />
+          ) : flow ? (
+            <SettingsEditor
+              flow={flow}
+              editable={editable}
+              problems={grouped.general}
+              vars={vars}
+              change={(fn) => edit(fn)}
+              onSelectNode={(id) => setSelection({ kind: "node", id })}
+            />
+          ) : null}
+        </aside>
+      </div>
+
+      {dialog === "publish" && (
+        <PublishDialog
+          flowId={flowId}
+          spec={spec}
+          latestVersion={summary.latest_version}
+          problems={problems}
+          onClose={() => setDialog(null)}
+          onPublished={(version) => {
+            setSummary((s) => (s ? { ...s, latest_version: version } : s));
+            setDialog(null);
+            toast(`Published v${version}. Calls use it from their next call.`);
+          }}
+        />
+      )}
+      {dialog === "versions" && (
+        <VersionsDialog
+          flowId={flowId}
+          draft={spec}
+          editable={editable}
+          onClose={() => setDialog(null)}
+          onRestore={(restored, version) => {
+            setSpec(clone(restored));
+            setDirty(true);
+            if (isEditable(restored)) {
+              setPositions((p) => positionsFor(restored, p));
+              setMode("canvas");
+            } else {
+              setJsonText(serialize(restored));
+              setMode("json");
+            }
+            setSelection({ kind: "settings" });
+            setDialog(null);
+            toast(`v${version} copied into the draft. Save, then publish to make it live.`);
+          }}
+        />
+      )}
+    </div>
+  );
+}

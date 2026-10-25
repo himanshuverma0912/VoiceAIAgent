@@ -81,6 +81,9 @@ func (c client) do(method, path, token string, body []byte, header ...string) (i
 func (c client) json(method, path, token string, body []byte, wantStatus int) map[string]any {
 	c.t.Helper()
 	status, _, out := c.do(method, path, token, body)
+	if wantStatus == 0 && status == 204 {
+		return nil
+	}
 	if status != wantStatus {
 		c.t.Fatalf("%s %s: status %d, want %d: %s", method, path, status, wantStatus, out)
 	}

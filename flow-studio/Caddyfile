@@ -33,9 +33,13 @@
 			X-Content-Type-Options nosniff
 			X-Frame-Options DENY
 			Referrer-Policy strict-origin-when-cross-origin
-			# index.html must never be cached, so a new release shows up at once.
-			Cache-Control "no-cache"
+			# The app talks only to this site (its API and Keycloak are under it).
+			Content-Security-Policy "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
 		}
+		# Built files have a content hash in their name, so they can be cached for
+		# good; index.html must not be, so a new release shows up at once.
+		header /assets/* Cache-Control "public, max-age=31536000, immutable"
+		header ?Cache-Control "no-cache"
 		root * {$STUDIO_ROOT:/srv/studio}
 		try_files {path} /index.html
 		file_server
