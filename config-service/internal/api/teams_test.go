@@ -114,6 +114,38 @@ func TestTeamsAndRoles(t *testing.T) {
 	c.json("GET", "/v1/flows/legacy_flow", ravi, nil, 200)
 	c.json("PUT", "/v1/flows/legacy_flow/team", admin, []byte(`{"team":"Bad Team"}`), 400)
 
+	// "New flow" never overwrites an existing flow, even one of another team.
+	if status, _, _ := c.do("PUT", "/v1/flows/emi_payment_issue/draft", ravi, complaint, "If-None-Match", "*"); status != 409 {
+		t.Fatalf("create-only over an existing flow: %d", status)
+	}
+	if status, _, _ := c.do("PUT", "/v1/flows/brand_new/draft", ravi, bytes.Replace(complaint, []byte(`"complaint_helpline"`), []byte(`"brand_new"`), 1), "If-None-Match", "*"); status != 200 {
+		t.Fatalf("create-only of a new flow: %d", status)
+	}
+
+	// Two people editing at once: the second save, based on an old copy, is refused.
+	draft := c.json("GET", "/v1/flows/emi_payment_issue/draft", asha, nil, 200)
+	opened := draft["checksum"].(string)
+	if status, _, _ := c.do("PUT", "/v1/flows/emi_payment_issue/draft", asha, emi, "If-Match", `"`+opened+`"`); status != 200 {
+		t.Fatalf("save with current checksum: %d", status)
+	}
+	edited := bytes.Replace(emi, []byte(`"settings": {`), []byte(`"settings": {"llm_temperature": 0.2, `), 1)
+	if status, _, _ := c.do("PUT", "/v1/flows/emi_payment_issue/draft", asha, edited, "If-Match", `"`+opened+`"`); status != 200 {
+		t.Fatalf("edit based on the current draft: %d", status) // nobody else saved in between
+	}
+	// A second tab still holding the copy opened before that edit:
+	if status, _, body := c.do("PUT", "/v1/flows/emi_payment_issue/draft", asha, emi, "If-Match", `"`+opened+`"`); status != 409 || !strings.Contains(string(body), "someone else saved") {
+		t.Fatalf("stale save: %d %s", status, body)
+	}
+
+	// Canvas positions: editors save them, viewers read them with the draft.
+	c.json("PUT", "/v1/flows/emi_payment_issue/layout", asha, []byte(`{"positions": {"verify_customer": {"x": 10, "y": 20.5}}}`), 0)
+	if d := c.json("GET", "/v1/flows/emi_payment_issue/draft", vera, nil, 200); toJSON(d["layout"]) != `{"positions":{"verify_customer":{"x":10,"y":20.5}}}` {
+		t.Fatalf("layout: %v", d["layout"])
+	}
+	c.json("PUT", "/v1/flows/emi_payment_issue/layout", vera, []byte(`{"positions": {}}`), 403)
+	c.json("PUT", "/v1/flows/emi_payment_issue/layout", asha, []byte(`{"positions": {"a": {"x": "left"}}}`), 400)
+	c.json("PUT", "/v1/flows/emi_payment_issue/layout", ravi, []byte(`{"positions": {}}`), 404)
+
 	// A token for another audience, or an expired one, is refused.
 	c.json("GET", "/v1/me", kc.Token(t, "asha@demo.corp", []string{"viewer"}, nil, map[string]any{"aud": "account"}), nil, 401)
 	c.json("GET", "/v1/me", kc.Token(t, "asha@demo.corp", []string{"viewer"}, nil, map[string]any{"exp": 1}), nil, 401)
