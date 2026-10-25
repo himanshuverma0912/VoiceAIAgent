@@ -36,6 +36,7 @@ import (
 
 	"github.com/himanshuverma0912/VoiceAIAgent/config-service/internal/auth"
 	"github.com/himanshuverma0912/VoiceAIAgent/config-service/internal/flowspec"
+	"github.com/himanshuverma0912/VoiceAIAgent/config-service/internal/livekit"
 	"github.com/himanshuverma0912/VoiceAIAgent/config-service/internal/store"
 )
 
@@ -52,6 +53,9 @@ type Server struct {
 	AdminToken   string
 	RuntimeToken string
 	Users        *auth.Verifier // nil: only ADMIN_TOKEN is accepted on /v1
+	LiveKit      livekit.Config // for browser test calls; empty: switched off
+
+	tests rateLimiter
 }
 
 func (s *Server) Handler() http.Handler {
@@ -71,6 +75,7 @@ func (s *Server) Handler() http.Handler {
 	v1("POST /v1/flows/{flow_id}/publish", s.publish)
 	v1("PUT /v1/flows/{flow_id}/team", s.setTeam)
 	v1("PUT /v1/flows/{flow_id}/layout", s.putLayout)
+	v1("POST /v1/flows/{flow_id}/test-sessions", s.startTestSession)
 	v1("GET /v1/flows/{flow_id}/versions", s.listVersions)
 	v1("GET /v1/flows/{flow_id}/versions/{version}", s.getVersion)
 	v1("GET /v1/numbers", s.listNumbers)
@@ -79,6 +84,7 @@ func (s *Server) Handler() http.Handler {
 	v1("GET /v1/audit", s.audit)
 
 	mux.Handle("GET /internal/v1/resolve", requireToken(s.RuntimeToken, http.HandlerFunc(s.resolve)))
+	mux.Handle("GET /internal/v1/flows/{flow_id}/draft", requireToken(s.RuntimeToken, http.HandlerFunc(s.internalDraft)))
 	return logRequests(mux)
 }
 

@@ -54,7 +54,13 @@ All `/v1` routes need `Authorization: Bearer <token>`. Through Caddy they're at
 | `PUT /v1/flows/{flow_id}/team` | platform-admin | `{"team": "emi"}`: give the flow to a team |
 | `GET /v1/numbers`, `PUT`/`DELETE /v1/numbers/{number}` | platform-admin | Number → flow mapping (`{"flow_id": "...", "version_pin": null}`) |
 | `GET /v1/audit?limit=100` | platform-admin | Who changed what |
+| `PUT /v1/flows/{flow_id}/layout` | flow-editor | Where Flow Studio draws the nodes (not part of the flow) |
+| `POST /v1/flows/{flow_id}/test-sessions` | flow-editor or flow-publisher | "Test call": a LiveKit room token with the agent dispatched to run the saved draft (5 minutes; 20 per person per hour) |
 | `GET /internal/v1/resolve?number=...` | RUNTIME_TOKEN | For the agent: the flow a number runs now; ETag / 304 |
+| `GET /internal/v1/flows/{flow_id}/draft` | RUNTIME_TOKEN | For the agent in a test call: the saved draft (422 if it has problems) |
+
+Saving a draft with `If-Match: "<checksum>"` (from GET draft) fails with 409 if someone
+else saved in between; `If-None-Match: *` creates a new flow only if the id is free.
 
 Numbers are stored in E.164 (`+918045678901`); `91 80 4567 8901` and similar are accepted.
 

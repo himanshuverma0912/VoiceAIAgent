@@ -219,6 +219,11 @@ func (s *Store) GetFlow(ctx context.Context, flowID string) (*FlowSummary, error
 	return &f, nil
 }
 
+// AuditOnly records an event that changes no configuration (e.g. a test call).
+func (s *Store) AuditOnly(ctx context.Context, actor, action, target string, detail map[string]any) error {
+	return withTx(ctx, s.db, func(tx *sql.Tx) error { return audit(ctx, tx, actor, action, target, detail) })
+}
+
 // SetLayout stores where Flow Studio draws the flow's nodes (not audited: it
 // changes nothing a caller hears).
 func (s *Store) SetLayout(ctx context.Context, flowID string, layout []byte) error {

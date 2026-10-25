@@ -199,6 +199,35 @@ async def test_emi_flow_double_debit_branch():
     assert h.ended and "Demo Finance" in h.ended[0]
 
 
+async def test_each_step_is_reported_as_it_starts():
+    # Flow Studio highlights the current step during a test call from these reports.
+    h = Harness("emi-payment-issue.json")
+    seen: list[str] = []
+    h.state.on_node = seen.append
+    await converse(
+        h,
+        [
+            call("update_dob", year=1990, month=5, day=14),
+            call("record_inputs", inputs=["4", "3", "2", "1"]),
+            "EMI do baar kat gaya",
+            call("go_to_double_debit", debit_date="5 October"),
+            call("go_to_closing"),
+        ],
+    )
+    assert seen == ["verify_customer", "identify_issue", "double_debit", "closing"]
+
+
+async def test_a_failing_step_report_does_not_break_the_call():
+    h = Harness("emi-payment-issue.json")
+
+    def broken(node_id: str) -> None:
+        raise RuntimeError("room gone")
+
+    h.state.on_node = broken
+    await converse(h, [call("update_dob", year=1990, month=5, day=14), call("record_inputs", inputs=["4", "3", "2", "1"])])
+    assert h.state.path[:2] == ["verify_customer", "identify_issue"]
+
+
 async def test_emi_flow_callback_branch_uses_caller_number():
     h = Harness("emi-payment-issue.json")
     await converse(

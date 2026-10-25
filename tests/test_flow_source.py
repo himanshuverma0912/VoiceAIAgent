@@ -13,7 +13,7 @@ import pytest
 from aiohttp import web
 
 from flow_engine import load_flow
-from flow_engine.source import FROM_CACHE, FROM_FILE, FROM_SERVICE, FlowSource
+from flow_engine.source import FROM_CACHE, FROM_DRAFT, FROM_FILE, FROM_SERVICE, FlowSource
 
 ROOT = Path(__file__).resolve().parent.parent
 NUMBER = "+918045678901"
@@ -59,11 +59,25 @@ class FakeConfigService:
         return web.json_response(body, headers={"ETag": etag})
 
 
+async def _draft(self, request: web.Request) -> web.Response:
+    self.requests.append({"draft": request.match_info["flow_id"], "auth": request.headers.get("Authorization")})
+    if request.headers.get("Authorization") != f"Bearer {TOKEN}":
+        return web.json_response({"error": "wrong token"}, status=401)
+    if request.match_info["flow_id"] not in self.drafts:
+        return web.json_response({"error": "not found"}, status=404)
+    return web.json_response({"flow_id": request.match_info["flow_id"], "checksum": "abc123", "spec": self.drafts[request.match_info["flow_id"]]})
+
+
+FakeConfigService.draft = _draft
+
+
 @pytest.fixture
 async def service():
     fake = FakeConfigService()
+    fake.drafts = {"emi_payment_issue": spec("flows/emi-payment-issue.json")}
     app = web.Application()
     app.router.add_get("/internal/v1/resolve", fake.resolve)
+    app.router.add_get("/internal/v1/flows/{flow_id}/draft", fake.draft)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "127.0.0.1", 0)
@@ -183,3 +197,26 @@ async def test_wrong_token_falls_back(service, http, tmp_path):
 async def test_no_dialled_number_uses_the_file(service, http, tmp_path):
     got = await source(service, tmp_path).flow_for("", http)
     assert got.source == FROM_FILE and not service.requests
+
+
+# ── Flow Studio test calls: the draft, by flow id ──
+
+
+async def test_studio_test_call_runs_the_draft(service, http, tmp_path):
+    got = await source(service, tmp_path).draft_for("emi_payment_issue", http)
+    assert (got.flow.flow_id, got.source, got.version, got.checksum) == ("emi_payment_issue", FROM_DRAFT, None, "abc123")
+    assert service.requests[-1] == {"draft": "emi_payment_issue", "auth": f"Bearer {TOKEN}"}
+
+
+async def test_studio_test_call_has_no_fallback(service, http, tmp_path, caplog):
+    src = source(service, tmp_path)
+    assert await src.draft_for("unknown_flow", http) is None  # 404
+    assert await src.draft_for("Bad Id/../x", http) is None  # never sent
+    assert all(r.get("draft") != "Bad Id/../x" for r in service.requests)
+    broken = spec("flows/emi-payment-issue.json")
+    broken["start_node"] = "nowhere"
+    service.drafts["emi_payment_issue"] = broken
+    with caplog.at_level(logging.ERROR, logger="flow-source"):
+        assert await src.draft_for("emi_payment_issue", http) is None
+    assert "can't run in this agent" in caplog.text
+    assert await FlowSource(fallback=FALLBACK).draft_for("emi_payment_issue", http) is None  # no service configured

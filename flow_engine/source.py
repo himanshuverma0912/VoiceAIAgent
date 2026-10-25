@@ -14,6 +14,10 @@ If the service can't answer, the call still goes ahead:
         -> the last flow it gave for this number (cache), else the fallback flow
   - number not mapped (404), or no config service configured
         -> the fallback flow (FLOW_FILE in .env)
+
+Test calls from Flow Studio ("Talk to this draft") instead load the flow's
+current draft by id (draft_for). There is no fallback for those: talking to a
+different flow than the one being tested would be misleading.
 """
 
 from __future__ import annotations
@@ -23,6 +27,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -36,13 +41,17 @@ logger = logging.getLogger("flow-source")
 FROM_SERVICE = "config-service"
 FROM_CACHE = "config-service-cache"
 FROM_FILE = "fallback-file"
+FROM_DRAFT = "studio-draft"
+
+_FLOW_ID_RE = re.compile(r"^[a-z][a-z0-9_]{0,47}$")
 
 
 @dataclass(frozen=True)
 class ResolvedFlow:
     flow: Flow
-    source: str  # FROM_SERVICE, FROM_CACHE or FROM_FILE
-    version: int | None = None  # published version; None for the fallback file
+    source: str  # FROM_SERVICE, FROM_CACHE, FROM_FILE or FROM_DRAFT
+    version: int | None = None  # published version; None for the fallback file and drafts
+    checksum: str | None = None  # drafts: which saved draft this is
 
 
 @dataclass(frozen=True)
@@ -122,6 +131,36 @@ class FlowSource:
         self._memory[number] = entry
         self._write_disk(number, etag, entry.version, data["spec"])
         return ResolvedFlow(flow, FROM_SERVICE, entry.version)
+
+    async def draft_for(self, flow_id: str, session: aiohttp.ClientSession) -> ResolvedFlow | None:
+        """A flow's current draft, for a Flow Studio test call. None if it can't be loaded."""
+        if not self.url:
+            logger.error("Flow Studio test call, but CONFIG_SERVICE_URL isn't set")
+            return None
+        if not _FLOW_ID_RE.match(flow_id):
+            logger.error("Flow Studio test call with an invalid flow id")
+            return None
+        try:
+            async with session.get(
+                f"{self.url}/internal/v1/flows/{flow_id}/draft",
+                headers={"Authorization": f"Bearer {self._token}"},
+                timeout=self._timeout,
+            ) as resp:
+                if resp.status != 200:
+                    logger.error("config service answered %s for the draft of %s", resp.status, flow_id)
+                    return None
+                data = json.loads(await resp.text())
+            flow = parse_flow(data["spec"])
+        except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+            logger.error("config service not reachable (%s)", type(e).__name__)
+            return None
+        except FlowError as e:
+            logger.error("the draft of %s can't run in this agent:\n%s", flow_id, e)
+            return None
+        except (ValueError, KeyError, TypeError) as e:
+            logger.error("config service sent an unexpected answer (%s)", type(e).__name__)
+            return None
+        return ResolvedFlow(flow, FROM_DRAFT, None, str(data.get("checksum") or "") or None)
 
     def _last_known(self, cached: _Entry | None) -> ResolvedFlow:
         if cached:

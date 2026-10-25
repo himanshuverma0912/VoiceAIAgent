@@ -8,10 +8,16 @@ flow the dialled number runs (CONFIG_SERVICE_URL in .env), so a published change
 applies from the next call. Without the config service, or when it can't answer,
 FLOW_FILE in .env is used (default: flows/complaint-helpline.json).
 
+Test calls from Flow Studio ("Talk to this draft") come from a browser instead
+of a phone: the job metadata says {"kind": "studio_test", "flow_id": ...}, and
+the agent runs that flow's current draft for at most 5 minutes.
+
 Production start command (see Dockerfile):
     python -m livekit.agents start agent.py
 """
 
+import asyncio
+import json
 import logging
 import os
 
@@ -168,27 +174,89 @@ def build_tts(flow: Flow) -> cartesia.TTS:
 server = AgentServer(drain_timeout=900)
 
 
+def _job_metadata(ctx: agents.JobContext) -> dict:
+    """The dispatch metadata ({} for phone calls)."""
+    try:
+        meta = json.loads(ctx.job.metadata or "{}")
+    except ValueError:
+        return {}
+    return meta if isinstance(meta, dict) else {}
+
+
+# Flow Studio test calls end after this long, whatever is happening.
+STUDIO_TEST_MAX_SECONDS = 300
+
+
+def _report_steps(room: rtc.Room):
+    """Publish the current step as the agent's "flow.node" attribute, so Flow
+    Studio can highlight it on the canvas during a test call."""
+    pending: set[asyncio.Task] = set()
+
+    def report(node_id: str) -> None:
+        if room.isconnected():
+            task = asyncio.create_task(room.local_participant.set_attributes({"flow.node": node_id}))
+            pending.add(task)
+            task.add_done_callback(pending.discard)
+
+    return report
+
+
 @server.rtc_session(agent_name=AGENT_NAME)
 async def entrypoint(ctx: agents.JobContext) -> None:
-    # Wait for the caller (the SIP participant) to read their phone numbers.
+    meta = _job_metadata(ctx)
+    studio_test = meta.get("kind") == "studio_test"
+
+    # Wait for the caller (the SIP participant, or the browser in a test call).
     await ctx.connect()
     caller = await ctx.wait_for_participant()
     attrs = caller.attributes or {}
-    # Our Vobiz number: the one dialled on inbound calls, the one we call from on
-    # outbound calls. It decides which flow runs.
-    dialed_number = attrs.get("sip.trunkPhoneNumber", "")
-    resolved = await FLOWS.flow_for(dialed_number, utils.http_context.http_session())
+    http = utils.http_context.http_session()
+
+    if studio_test:
+        resolved = await FLOWS.draft_for(str(meta.get("flow_id", "")), http)
+        if resolved is None:
+            logger.error("Flow Studio test call: the draft couldn't be loaded; ending it")
+            await ctx.delete_room()
+            return
+        caller_number = dialed_number = ""
+    else:
+        # Our Vobiz number: the one dialled on inbound calls, the one we call from
+        # on outbound calls. It decides which flow runs.
+        dialed_number = attrs.get("sip.trunkPhoneNumber", "")
+        caller_number = attrs.get("sip.phoneNumber", "")
+        resolved = await FLOWS.flow_for(dialed_number, http)
     flow = resolved.flow
 
     state = CallState(
         flow=flow,
-        caller_number=attrs.get("sip.phoneNumber", ""),
+        caller_number=caller_number,
         dialed_number=dialed_number,
+        on_node=_report_steps(ctx.room),
     )
     logger.info(
         "call started",
-        extra={"flow_id": flow.flow_id, "flow_version": resolved.version, "flow_source": resolved.source},
+        extra={
+            "flow_id": flow.flow_id,
+            "flow_version": resolved.version,
+            "flow_source": resolved.source,
+            "draft_checksum": resolved.checksum,
+        },
     )
+
+    if studio_test:
+        limit = min(int(meta.get("max_seconds") or STUDIO_TEST_MAX_SECONDS), STUDIO_TEST_MAX_SECONDS)
+
+        async def end_at_time_limit() -> None:
+            await asyncio.sleep(limit)
+            logger.info("Flow Studio test call reached its time limit", extra={"seconds": limit})
+            await ctx.delete_room()
+
+        timer = asyncio.create_task(end_at_time_limit())
+
+        async def stop_timer() -> None:
+            timer.cancel()
+
+        ctx.add_shutdown_callback(stop_timer)
 
     session = AgentSession(
         stt=build_stt(flow),

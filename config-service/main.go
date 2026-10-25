@@ -17,6 +17,13 @@
 //	               (on EC2 the internal http://keycloak:8080/auth/realms/voice-platform/protocol/openid-connect/certs)
 //	OIDC_AUDIENCE  default config-api
 //
+// Browser test calls from Flow Studio ("Talk to this draft"); off when unset:
+//
+//	LIVEKIT_URL         wss://<project>.livekit.cloud (same as the agent's)
+//	LIVEKIT_API_KEY     the agent's LiveKit key and secret
+//	LIVEKIT_API_SECRET
+//	LIVEKIT_AGENT_NAME  default VoiceAIAgentInbound
+//
 // `config-service -healthcheck` exits 0 if the service on this host is up
 // (used by Docker; the image has no curl).
 package main
@@ -38,6 +45,7 @@ import (
 
 	"github.com/himanshuverma0912/VoiceAIAgent/config-service/internal/api"
 	"github.com/himanshuverma0912/VoiceAIAgent/config-service/internal/auth"
+	"github.com/himanshuverma0912/VoiceAIAgent/config-service/internal/livekit"
 	"github.com/himanshuverma0912/VoiceAIAgent/config-service/internal/store"
 )
 
@@ -113,9 +121,21 @@ func run(addr string) error {
 		slog.Warn("OIDC_ISSUER not set: only ADMIN_TOKEN can use /v1")
 	}
 
+	lk := livekit.Config{
+		URL:       env("LIVEKIT_URL", ""),
+		APIKey:    env("LIVEKIT_API_KEY", ""),
+		APISecret: env("LIVEKIT_API_SECRET", ""),
+		AgentName: env("LIVEKIT_AGENT_NAME", "VoiceAIAgentInbound"),
+	}
+	if lk.Enabled() {
+		slog.Info("browser test calls enabled", "livekit", lk.URL, "agent", lk.AgentName)
+	} else {
+		slog.Warn("LIVEKIT_URL / LIVEKIT_API_KEY / LIVEKIT_API_SECRET not set: browser test calls are off")
+	}
+
 	srv := &http.Server{
 		Addr:              addr,
-		Handler:           (&api.Server{Store: store.New(db), AdminToken: admin, RuntimeToken: runtime, Users: users}).Handler(),
+		Handler:           (&api.Server{Store: store.New(db), AdminToken: admin, RuntimeToken: runtime, Users: users, LiveKit: lk}).Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      15 * time.Second,
