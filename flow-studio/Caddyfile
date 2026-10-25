@@ -33,8 +33,11 @@
 			X-Content-Type-Options nosniff
 			X-Frame-Options DENY
 			Referrer-Policy strict-origin-when-cross-origin
-			# The app talks only to this site (its API and Keycloak are under it).
-			Content-Security-Policy "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
+			# The app talks only to this site (its API and Keycloak are under it) and,
+			# for browser test calls, to LiveKit Cloud.
+			Content-Security-Policy "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' {$LIVEKIT_CSP:https://*.livekit.cloud wss://*.livekit.cloud}; media-src 'self' blob:; worker-src 'self' blob:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
+			# The microphone, for test calls on this site only.
+			Permissions-Policy "microphone=(self), camera=(), geolocation=()"
 		}
 		# Built files have a content hash in their name, so they can be cached for
 		# good; index.html must not be, so a new release shows up at once.

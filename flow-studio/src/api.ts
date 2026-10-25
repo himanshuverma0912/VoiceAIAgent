@@ -95,4 +95,7 @@ export const api = {
     call<{ version: number; unchanged: boolean; published_by: string }>("POST", `/v1/flows/${id}/publish`),
   versions: (id: string) => call<{ versions: Version[] }>("GET", `/v1/flows/${id}/versions`).then((r) => r.versions),
   version: (id: string, n: number) => call<Version>("GET", `/v1/flows/${id}/versions/${n}`),
+  /** A browser test call of the saved draft: a LiveKit room with the agent dispatched. */
+  startTest: (id: string) =>
+    call<{ url: string; token: string; room: string; max_seconds: number }>("POST", `/v1/flows/${id}/test-sessions`),
 };

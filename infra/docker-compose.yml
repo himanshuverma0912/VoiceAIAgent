@@ -75,6 +75,11 @@ services:
       # Keycloak's keys (fetched over the internal network).
       OIDC_ISSUER: https://${PUBLIC_HOST:?set it in .env}/auth/realms/voice-platform
       OIDC_JWKS_URL: http://keycloak:8080/auth/realms/voice-platform/protocol/openid-connect/certs
+      # "Talk to this draft" in Flow Studio: browser test calls through LiveKit
+      # Cloud (the same project and key as the agent). Leave empty to switch off.
+      LIVEKIT_URL: ${LIVEKIT_URL:-}
+      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:-}
+      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:-}
     ports:
       # Same as LiteLLM: only from the EC2 machine itself (or an SSH tunnel).
       - "127.0.0.1:8080:8080"

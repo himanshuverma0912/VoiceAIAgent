@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"encoding/base64"
+	"encoding/json"
 	"net/http/httptest"
 	"os"
 	"strings"
@@ -11,6 +13,7 @@ import (
 
 	"github.com/himanshuverma0912/VoiceAIAgent/config-service/internal/auth"
 	"github.com/himanshuverma0912/VoiceAIAgent/config-service/internal/auth/authtest"
+	"github.com/himanshuverma0912/VoiceAIAgent/config-service/internal/livekit"
 	"github.com/himanshuverma0912/VoiceAIAgent/config-service/internal/store"
 )
 
@@ -35,7 +38,8 @@ func TestTeamsAndRoles(t *testing.T) {
 	kc := authtest.New(t)
 	srv := httptest.NewServer((&Server{
 		Store: store.New(db), AdminToken: adminToken, RuntimeToken: runtimeToken,
-		Users: &auth.Verifier{Issuer: authtest.Issuer, Audience: "config-api", JWKSURL: kc.JWKSURL()},
+		Users:   &auth.Verifier{Issuer: authtest.Issuer, Audience: "config-api", JWKSURL: kc.JWKSURL()},
+		LiveKit: livekit.Config{URL: "wss://demo.livekit.cloud", APIKey: "APIkey", APISecret: "a-secret-of-some-length", AgentName: "VoiceAIAgentInbound"},
 	}).Handler())
 	defer srv.Close()
 	c := client{t, srv.URL}
@@ -146,6 +150,32 @@ func TestTeamsAndRoles(t *testing.T) {
 	c.json("PUT", "/v1/flows/emi_payment_issue/layout", asha, []byte(`{"positions": {"a": {"x": "left"}}}`), 400)
 	c.json("PUT", "/v1/flows/emi_payment_issue/layout", ravi, []byte(`{"positions": {}}`), 404)
 
+	// Browser test calls: editors and publishers of the team; not viewers or other teams.
+	ts := c.json("POST", "/v1/flows/emi_payment_issue/test-sessions", asha, nil, 201)
+	meta := decodeLiveKitMetadata(t, ts["token"].(string))
+	if ts["url"] != "wss://demo.livekit.cloud" || ts["max_seconds"] != 300.0 ||
+		meta["kind"] != "studio_test" || meta["flow_id"] != "emi_payment_issue" || meta["requested_by"] != "asha@demo.corp" {
+		t.Fatalf("test session: %v / %v", ts, meta)
+	}
+	c.json("POST", "/v1/flows/emi_payment_issue/test-sessions", vera, nil, 403)
+	c.json("POST", "/v1/flows/emi_payment_issue/test-sessions", ravi, nil, 404)
+	// The agent reads the same draft with its runtime token (and only with it).
+	internal := c.json("GET", "/internal/v1/flows/emi_payment_issue/draft", runtimeToken, nil, 200)
+	if internal["checksum"] != meta["checksum"] || internal["spec"] == nil {
+		t.Fatalf("internal draft: %v", internal["checksum"])
+	}
+	c.json("GET", "/internal/v1/flows/emi_payment_issue/draft", adminToken, nil, 401)
+	c.json("GET", "/internal/v1/flows/nope/draft", runtimeToken, nil, 404)
+	// A draft with problems can't be tested.
+	c.json("PUT", "/v1/flows/brand_new/draft", ravi, []byte(`{"schema_version": 1}`), 200)
+	if res := c.json("POST", "/v1/flows/brand_new/test-sessions", ravi, nil, 422); res["problems"] == nil {
+		t.Fatalf("invalid draft: %v", res)
+	}
+	c.json("GET", "/internal/v1/flows/brand_new/draft", runtimeToken, nil, 422)
+	if !strings.Contains(toJSON(c.json("GET", "/v1/audit", admin, nil, 200)["entries"]), "test.start") {
+		t.Error("test call not in the audit log")
+	}
+
 	// A token for another audience, or an expired one, is refused.
 	c.json("GET", "/v1/me", kc.Token(t, "asha@demo.corp", []string{"viewer"}, nil, map[string]any{"aud": "account"}), nil, 401)
 	c.json("GET", "/v1/me", kc.Token(t, "asha@demo.corp", []string{"viewer"}, nil, map[string]any{"exp": 1}), nil, 401)
@@ -166,4 +196,24 @@ func flowIDs(list map[string]any) string {
 		ids = append(ids, f.(map[string]any)["flow_id"].(string))
 	}
 	return strings.Join(ids, ",")
+}
+
+func decodeLiveKitMetadata(t *testing.T, token string) map[string]any {
+	t.Helper()
+	parts := strings.Split(token, ".")
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var claims struct {
+		RoomConfig struct {
+			Agents []struct {
+				Metadata string `json:"metadata"`
+			} `json:"agents"`
+		} `json:"roomConfig"`
+	}
+	json.Unmarshal(payload, &claims) //nolint:errcheck
+	var meta map[string]any
+	json.Unmarshal([]byte(claims.RoomConfig.Agents[0].Metadata), &meta) //nolint:errcheck
+	return meta
 }

@@ -4,6 +4,7 @@ import { Canvas, type Selection } from "../components/Canvas";
 import { NodeEditor } from "../components/NodeEditor";
 import { PublishDialog, VersionsDialog } from "../components/Review";
 import { SettingsEditor } from "../components/SettingsEditor";
+import { TestCall } from "../components/TestCall";
 import { toast } from "../components/ui";
 import { NODE_WIDTH, autoLayout, positionsFor, type Positions } from "../layout";
 import { Link, setLeaveGuard } from "../router";
@@ -42,6 +43,8 @@ export function FlowEditor({ me, flowId }: { me: Me; flowId: string }) {
   const [saving, setSaving] = useState(false);
   const [conflict, setConflict] = useState(false);
   const [dialog, setDialog] = useState<null | "publish" | "versions">(null);
+  const [testing, setTesting] = useState(false);
+  const [activeNode, setActiveNode] = useState<string | null>(null);
 
   // ── load ──
   useEffect(() => {
@@ -248,6 +251,16 @@ export function FlowEditor({ me, flowId }: { me: Me; flowId: string }) {
     return () => window.removeEventListener("keydown", onKey);
   }, [save]);
 
+  // "Talk to this draft": the agent runs the saved draft, so save first.
+  const startTest = async () => {
+    if (unsaved && !(await save())) return;
+    if (problems.length) {
+      toast("Fix the draft's problems first; the agent can't run it yet.");
+      return;
+    }
+    setTesting(true);
+  };
+
   const openPublish = async () => {
     if (unsaved && !(await save())) return;
     setDialog("publish");
@@ -279,6 +292,10 @@ export function FlowEditor({ me, flowId }: { me: Me; flowId: string }) {
           <strong>{flow?.name || summary.name}</strong>
           <span className="faint mono">
             {flowId} · team {summary.team || "unassigned"}
+            <span style={{ fontFamily: "system-ui, sans-serif" }}>
+              {" · "}
+              {saving ? "saving…" : unsaved ? "unsaved changes" : editable ? "saved" : "view only"}
+            </span>
           </span>
         </div>
         {summary.latest_version ? <span className="chip good">v{summary.latest_version} live</span> : <span className="chip">not published</span>}
@@ -293,9 +310,6 @@ export function FlowEditor({ me, flowId }: { me: Me; flowId: string }) {
         ) : (
           <span className="chip good">no problems</span>
         )}
-        <span className="faint" style={{ fontSize: 12.5 }}>
-          {saving ? "Saving…" : unsaved ? "Unsaved changes" : editable ? "All changes saved" : ""}
-        </span>
         <span className="spacer" />
         <div className="tabs" role="group" aria-label="View">
           <button aria-pressed={mode === "canvas"} onClick={toCanvas}>
@@ -331,7 +345,17 @@ export function FlowEditor({ me, flowId }: { me: Me; flowId: string }) {
             </button>
           </>
         )}
+        {mode === "canvas" && flow && (
+          <button onClick={() => setSelection({ kind: "settings" })} aria-pressed={selection.kind === "settings"}>
+            Settings
+          </button>
+        )}
         <button onClick={() => setDialog("versions")}>History</button>
+        {(editable || publishable) && (
+          <button onClick={startTest} disabled={testing || saving} title="Talk to this draft from your browser (up to 5 minutes)">
+            🎙 Test call
+          </button>
+        )}
         {editable && (
           <button className={unsaved && !publishable ? "primary" : ""} disabled={!unsaved || saving} onClick={save} title="Ctrl/⌘ + S">
             Save
@@ -368,6 +392,7 @@ export function FlowEditor({ me, flowId }: { me: Me; flowId: string }) {
               positions={positions}
               problemsByNode={grouped.byNode}
               selection={selection}
+              activeNode={activeNode}
               editable={editable}
               onSelect={setSelection}
               onMove={move}
@@ -381,6 +406,16 @@ export function FlowEditor({ me, flowId }: { me: Me; flowId: string }) {
               value={jsonText}
               readOnly={!editable}
               onChange={(e) => typeJson(e.target.value)}
+            />
+          )}
+          {testing && (
+            <TestCall
+              flowId={flowId}
+              onNode={setActiveNode}
+              onClose={() => {
+                setTesting(false);
+                setActiveNode(null);
+              }}
             />
           )}
         </div>

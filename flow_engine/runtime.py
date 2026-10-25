@@ -94,6 +94,9 @@ class CallState:
     path: list[str] = field(default_factory=list)
     greeted: bool = False
     end_call: EndCallFactory = default_end_call
+    # Called with the node id whenever a step starts (the agent publishes it to
+    # the room so Flow Studio can highlight the current step in a test call).
+    on_node: Callable[[str], None] | None = None
 
     def variables(self) -> dict[str, str]:
         now = datetime.now(IST)
@@ -186,6 +189,11 @@ class _NodeMixin:
     def _entered(self) -> None:
         self.state.path.append(self.node_id)
         logger.info("flow node entered", extra={"flow_id": self.state.flow.flow_id, "node": self.node_id})
+        if self.state.on_node:
+            try:
+                self.state.on_node(self.node_id)
+            except Exception:  # showing the step is a nicety; never let it break a call
+                logger.exception("couldn't report the current step")
 
 
 class FlowAgent(_NodeMixin, Agent):

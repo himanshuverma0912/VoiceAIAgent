@@ -20,7 +20,7 @@ export type Selection =
   | { kind: "settings" }
   | { kind: "node"; id: string; transition?: number };
 
-type CardData = { id: string; node: FlowNode; isStart: boolean; problems: number };
+type CardData = { id: string; node: FlowNode; isStart: boolean; problems: number; active: boolean };
 
 const COLORS: Record<FlowNode["type"], string> = { agent: "var(--agent)", collect: "var(--collect)", end: "var(--end)" };
 
@@ -42,16 +42,17 @@ function footer(node: FlowNode): string {
 }
 
 const Card = memo(function Card({ data, selected }: NodeProps<RFNode<CardData>>) {
-  const { node, id, isStart, problems } = data;
+  const { node, id, isStart, problems, active } = data;
   return (
     <div
-      className={`fs-node${selected ? " selected" : ""}${problems ? " has-problems" : ""}`}
+      className={`fs-node${selected ? " selected" : ""}${problems ? " has-problems" : ""}${active ? " active" : ""}`}
       style={{ "--node-color": COLORS[node.type] } as React.CSSProperties}
     >
       <Handle type="target" position={Position.Left} />
       <div className="kind">
         {NODE_TYPE_LABEL[node.type]}
         {isStart && <span className="chip" style={{ textTransform: "none", letterSpacing: 0 }}>start</span>}
+        {active && <span className="chip good" style={{ textTransform: "none", letterSpacing: 0 }}>● now</span>}
       </div>
       <div className="id">{id}</div>
       <div className="text">{summary(node)}</div>
@@ -73,6 +74,7 @@ export function Canvas(props: {
   positions: Positions;
   problemsByNode: Record<string, string[]>;
   selection: Selection;
+  activeNode?: string | null; // the step a test call is in
   editable: boolean;
   onSelect: (s: Selection) => void;
   onMove: (id: string, pos: { x: number; y: number }) => void;
@@ -92,10 +94,16 @@ export function Canvas(props: {
         type: "card",
         position: positions[id] ?? old.get(id)?.position ?? { x: 0, y: 0 },
         selected: id === selectedNode,
-        data: { id, node, isStart: id === flow.start_node, problems: problemsByNode[id]?.length ?? 0 },
+        data: {
+          id,
+          node,
+          isStart: id === flow.start_node,
+          problems: problemsByNode[id]?.length ?? 0,
+          active: id === props.activeNode,
+        },
       }));
     });
-  }, [flow, positions, problemsByNode, selectedNode]);
+  }, [flow, positions, problemsByNode, selectedNode, props.activeNode]);
 
   const edges = useMemo<RFEdge[]>(
     () =>
