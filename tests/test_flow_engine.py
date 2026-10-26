@@ -373,6 +373,43 @@ async def test_every_kind_of_question_offers_end_call():
     assert "end_call" in digits["tools"] and "no longer need help" in digits["instructions"]
 
 
+async def test_every_question_knows_the_flows_persona_and_rules():
+    """Regression test: in a test call the caller of the EMI line said "no water supply
+    in my area" and the date-of-birth question ignored it and asked in Hindi although
+    the caller spoke English. LiveKit's ready-made question tasks bring their own
+    prompt ("ignore unrelated input"), so the flow's persona (language rules, what the
+    line is for) and guardrails must be added to every question."""
+    from flow_engine.runtime import QUESTION_RULES
+
+    e = Harness("emi-payment-issue.json")
+    await converse(e, ["There has been no water supply in my area", call("update_dob", year=1996, month=11, day=30)])
+    dob = [r for r in e.llm.requests if "update_dob" in r["tools"]][0]
+    digits = [r for r in e.llm.requests if "record_inputs" in r["tools"]][0]
+    for q in (dob, digits):
+        assert "Demo Finance" in q["instructions"]  # what this line is for
+        assert "Reply in the language the caller is speaking" in q["instructions"]  # persona's language rule
+        assert "Never ask for or repeat a full card number" in q["instructions"]  # a guardrail
+        assert QUESTION_RULES in q["instructions"]
+
+    h = Harness("complaint-helpline.json")
+    await converse(
+        h,
+        [
+            "x",
+            call("go_to_collect_details", issue_category="other", issue_summary="x"),
+            call("update_name", first_name="A", last_name="B"),
+            call("update_phone_number", phone_number=CALLER),
+        ],
+    )
+    for tool in ("update_name", "update_phone_number", "record_city"):
+        q = [r for r in h.llm.requests if tool in r["tools"]][0]
+        assert "Complaint Department Helpdesk" in q["instructions"], tool
+        assert "Do not make political statements" in q["instructions"], tool
+        assert QUESTION_RULES in q["instructions"], tool
+    # The caller's number still reaches the phone question.
+    assert f"The caller is calling from {CALLER}" in [r for r in h.llm.requests if "update_phone_number" in r["tools"]][0]["instructions"]
+
+
 async def test_real_end_call_tool_hangs_up_from_inside_a_question(monkeypatch):
     """Uses LiveKit's real EndCallTool (not the stand-in) with a stand-in job, to check
     the session really shuts down and the room is deleted when ending mid-question."""
