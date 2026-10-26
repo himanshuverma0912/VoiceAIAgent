@@ -45,6 +45,7 @@ from livekit.plugins import cartesia, deepgram, noise_cancellation, openai
 
 from flow_engine import Flow, load_flow
 from flow_engine.calllog import CallRecorder, send_record
+from flow_engine.language import LanguageHint
 from flow_engine.runtime import CallState, default_end_call, start_agent
 from flow_engine.spec import EndNode
 from flow_engine.source import FlowSource
@@ -133,16 +134,34 @@ class _BearerAuthSession:
         return getattr(self._session, name)
 
 
+class FlowLLM(openai.LLM):
+    """The OpenAI-compatible LLM, plus a line before every request saying which
+    language to answer in, worked out from the caller's latest words (see
+    flow_engine/language.py). Covers every step, including LiveKit's built-in
+    questions, because they all go through this one LLM."""
+
+    def __init__(self, *, flow_language: str, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._language = LanguageHint(flow_language)
+
+    def chat(self, *, chat_ctx, **kwargs):
+        return super().chat(chat_ctx=self._language.apply(chat_ctx), **kwargs)
+
+
 def build_llm(flow: Flow) -> openai.LLM:
     s = flow.settings
     if LITELLM_URL:
         # The flow's model alias wins; LLM_MODEL in .env is the fallback.
         model = s.llm_model or _env("LLM_MODEL", "voice-fast")
-        return openai.LLM(
-            model=model, base_url=f"{LITELLM_URL}/v1", api_key=_litellm_key(), temperature=s.llm_temperature
+        return FlowLLM(
+            flow_language=s.language,
+            model=model,
+            base_url=f"{LITELLM_URL}/v1",
+            api_key=_litellm_key(),
+            temperature=s.llm_temperature,
         )
     # Without LiteLLM, model aliases don't exist; use a real OpenAI model name.
-    return openai.LLM(model=_env("LLM_MODEL", "gpt-4o-mini"), temperature=s.llm_temperature)
+    return FlowLLM(flow_language=s.language, model=_env("LLM_MODEL", "gpt-4o-mini"), temperature=s.llm_temperature)
 
 
 def build_stt(flow: Flow) -> deepgram.STT:
