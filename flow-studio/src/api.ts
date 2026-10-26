@@ -37,6 +37,63 @@ export interface Version {
   spec?: unknown;
 }
 
+// ── Call history (counts and timings only; no call content) ──
+
+export type Outcome = "completed" | "ended_early" | "caller_hung_up" | "time_limit" | "error" | "other";
+export type Channel = "phone" | "studio_test" | "all";
+
+export interface CallUsage {
+  llm_input_tokens: number;
+  llm_output_tokens: number;
+  stt_audio_seconds: number;
+  tts_characters: number;
+  tts_audio_seconds: number;
+}
+
+export interface Call {
+  call_id: string;
+  flow_version: number | null;
+  flow_source: string;
+  channel: "phone" | "studio_test";
+  runtime: string;
+  started_at: string;
+  duration_ms: number;
+  outcome: Outcome;
+  steps: { node: string; ms: number }[];
+  turns: { caller: number; agent: number };
+  latency_ms: { p50: number; p95: number; count: number } | null;
+  usage: CallUsage;
+}
+
+export interface Stats {
+  avg: number;
+  p50: number;
+  p95: number;
+}
+
+export interface CallSummary {
+  days: number;
+  channel: string;
+  calls: number;
+  truncated: boolean;
+  outcomes: Record<Outcome, number>;
+  duration_ms: Stats | null;
+  latency_ms: Stats | null;
+  steps: { node: string; reached: number; avg_ms: number; ended_here: number; hung_up_here: number }[];
+  versions: {
+    version: number | null;
+    source: string;
+    calls: number;
+    completed: number;
+    caller_hung_up: number;
+    avg_duration_ms: number;
+    last_call_at: string;
+  }[];
+  per_day: { date: string; calls: number; completed: number }[];
+  usage: CallUsage;
+  avg_turns: { caller: number; agent: number } | null;
+}
+
 export class ApiError extends Error {
   constructor(
     public status: number,
@@ -98,4 +155,8 @@ export const api = {
   /** A browser test call of the saved draft: a LiveKit room with the agent dispatched. */
   startTest: (id: string) =>
     call<{ url: string; token: string; room: string; max_seconds: number }>("POST", `/v1/flows/${id}/test-sessions`),
+  calls: (id: string, days: number, channel: Channel, limit = 50) =>
+    call<{ calls: Call[] }>("GET", `/v1/flows/${id}/calls?days=${days}&channel=${channel}&limit=${limit}`).then((r) => r.calls),
+  callSummary: (id: string, days: number, channel: Channel) =>
+    call<CallSummary>("GET", `/v1/flows/${id}/calls/summary?days=${days}&channel=${channel}`),
 };
