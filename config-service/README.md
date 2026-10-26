@@ -63,6 +63,9 @@ All `/v1` routes need `Authorization: Bearer <token>`. Through Caddy they're at
 | `POST /v1/flows/{flow_id}/test-sessions` | flow-editor or flow-publisher | "Test call": a LiveKit room token with the agent dispatched to run the saved draft (5 minutes; 20 per person per hour) |
 | `GET /v1/flows/{flow_id}/calls?days=7&channel=phone&limit=50` | viewer | Recent calls (channel `phone`, `studio_test` or `all`) |
 | `GET /v1/flows/{flow_id}/calls/summary?days=7&channel=phone` | viewer | Outcomes, durations, reply speed, where callers drop off, per version and per day |
+| `GET /v1/catalog` | signed in | The models flows may use (LLMs, speech-to-text models, voices); admins also see switched-off ones |
+| `PUT /v1/catalog/{kind}/{model_id}` | platform-admin | Add or change one: kind `llm` (LiteLLM alias), `stt` (Deepgram model) or `tts_voice` (Cartesia voice id); `{"label", "notes", "languages": [], "teams": [], "enabled": true}` |
+| `DELETE /v1/catalog/{kind}/{model_id}` | platform-admin | Remove one nothing uses (409 lists the flows that still do) |
 | `GET /internal/v1/resolve?number=...` | RUNTIME_TOKEN | For the agent: the flow a number runs now; ETag / 304 |
 | `GET /internal/v1/flows/{flow_id}/draft` | RUNTIME_TOKEN | For the agent in a test call: the saved draft (422 if it has problems) |
 | `POST /internal/v1/calls` | RUNTIME_TOKEN | For the agent when a call ends: its call-history record (sending it again is a no-op) |
@@ -71,6 +74,16 @@ Saving a draft with `If-Match: "<checksum>"` (from GET draft) fails with 409 if 
 else saved in between; `If-None-Match: *` creates a new flow only if the id is free.
 
 Numbers are stored in E.164 (`+918045678901`); `91 80 4567 8901` and similar are accepted.
+
+## Model catalog
+
+A flow's `settings.llm_model`, `settings.stt_model` and `settings.tts_voice_id`
+must be in the catalog, switched on, offered to the flow's team and (if the
+entry lists languages) support the flow's language. Otherwise the draft has a
+problem and can't be test-called or published. Empty means the agent's default.
+Switching an entry off doesn't stop published versions that use it; their next
+publish needs another model. A new LLM must exist as an alias in
+`infra/litellm-config.yaml` before it's added here.
 
 ## Validation
 

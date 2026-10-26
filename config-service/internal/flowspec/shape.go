@@ -363,7 +363,7 @@ func (s *shape) flow(v any) *Flow {
 
 func (s *shape) settings(v any) {
 	const loc = "settings"
-	o, ok := s.model(loc, v, "FlowSettings", "language", "llm_model", "llm_temperature", "tts_voice_id")
+	o, ok := s.model(loc, v, "FlowSettings", "language", "llm_model", "llm_temperature", "stt_model", "tts_voice_id")
 	if !ok {
 		return
 	}
@@ -376,6 +376,7 @@ func (s *shape) settings(v any) {
 	if v, ok := o.Get("llm_temperature"); ok {
 		s.number(at(loc, "llm_temperature"), v, 0, 2)
 	}
+	s.optionalString(loc, o, "stt_model", false)
 	s.optionalString(loc, o, "tts_voice_id", false)
 }
 

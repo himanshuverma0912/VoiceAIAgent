@@ -189,6 +189,7 @@ class FlowSettings(_Strict):
     language: str = Field(default="hi", pattern=r"^[a-z]{2}(-[A-Za-z]{2})?$|^multi$")
     llm_model: str | None = Field(default=None, description="LiteLLM alias, e.g. 'voice-fast'")
     llm_temperature: float = Field(default=0, ge=0, le=2)
+    stt_model: str | None = Field(default=None, description="Deepgram model, e.g. 'nova-3'")
     tts_voice_id: str | None = Field(default=None, description="Cartesia voice id")
 
 

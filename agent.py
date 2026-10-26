@@ -165,17 +165,19 @@ def build_llm(flow: Flow) -> openai.LLM:
 
 
 def build_stt(flow: Flow) -> deepgram.STT:
-    # Nova-3 Hindi also copes with Hinglish (Hindi mixed with English words).
+    # The flow's Deepgram model (chosen from the model catalog in Flow Studio);
+    # nova-3 by default. Nova-3 Hindi also copes with Hinglish.
+    model = flow.settings.stt_model or "nova-3"
     language = flow.settings.language
     if LITELLM_URL:
         return deepgram.STT(
-            model="nova-3",
+            model=model,
             language=language,
             base_url=f"{LITELLM_URL}/deepgram/v1/listen",
             api_key=_litellm_key(),
             http_session=_BearerAuthSession(utils.http_context.http_session()),
         )
-    return deepgram.STT(model="nova-3", language=language)
+    return deepgram.STT(model=model, language=language)
 
 
 def build_tts(flow: Flow) -> cartesia.TTS:

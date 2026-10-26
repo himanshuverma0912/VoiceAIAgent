@@ -37,6 +37,29 @@ export interface Version {
   spec?: unknown;
 }
 
+// ── Model catalog: the models flows may use ──
+
+export type CatalogKind = "llm" | "stt" | "tts_voice";
+
+export interface CatalogEntry {
+  kind: CatalogKind;
+  model_id: string;
+  label: string;
+  notes: string;
+  languages: string[]; // empty: any
+  teams: string[]; // empty: every team
+  enabled: boolean;
+  updated_at: string;
+  updated_by: string;
+}
+
+export type CatalogInput = Pick<CatalogEntry, "label" | "notes" | "languages" | "teams" | "enabled">;
+
+/** May a flow of this team use the entry? (The server checks the same.) */
+export function offeredTo(e: CatalogEntry, team: string): boolean {
+  return e.enabled && (e.teams.length === 0 || e.teams.includes(team));
+}
+
 // ── Call history (counts and timings only; no call content) ──
 
 export type Outcome = "completed" | "ended_early" | "caller_hung_up" | "time_limit" | "error" | "other";
@@ -134,7 +157,13 @@ export const api = {
   flows: () => call<{ flows: FlowSummary[] }>("GET", "/v1/flows").then((r) => r.flows),
   flow: (id: string) => call<FlowSummary>("GET", `/v1/flows/${id}`),
   draft: (id: string) => call<Draft>("GET", `/v1/flows/${id}/draft`),
-  validate: (specText: string) => call<{ valid: boolean; problems: string[] }>("POST", "/v1/validate", specText),
+  /** team: also check the model catalog as it applies to that team. */
+  validate: (specText: string, team?: string) =>
+    call<{ valid: boolean; problems: string[] }>("POST", `/v1/validate${team ? `?team=${encodeURIComponent(team)}` : ""}`, specText),
+  catalog: () => call<{ entries: CatalogEntry[] }>("GET", "/v1/catalog").then((r) => r.entries),
+  putCatalog: (kind: CatalogKind, id: string, input: CatalogInput) =>
+    call<{ created: boolean; used_by: string[] }>("PUT", `/v1/catalog/${kind}/${encodeURIComponent(id)}`, JSON.stringify(input)),
+  deleteCatalog: (kind: CatalogKind, id: string) => call<void>("DELETE", `/v1/catalog/${kind}/${encodeURIComponent(id)}`),
   /** ifMatch: only save if nobody else saved since (409 otherwise). createOnly: fail if the flow exists. */
   saveDraft: (id: string, specText: string, opts: { team?: string; ifMatch?: string; createOnly?: boolean } = {}) =>
     call<{ valid: boolean; problems: string[]; checksum: string }>(

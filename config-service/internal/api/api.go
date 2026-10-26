@@ -84,6 +84,9 @@ func (s *Server) Handler() http.Handler {
 	v1("GET /v1/audit", s.audit)
 	v1("GET /v1/flows/{flow_id}/calls", s.listCalls)
 	v1("GET /v1/flows/{flow_id}/calls/summary", s.callSummary)
+	v1("GET /v1/catalog", s.listCatalog)
+	v1("PUT /v1/catalog/{kind}/{model_id}", s.putCatalogEntry)
+	v1("DELETE /v1/catalog/{kind}/{model_id}", s.deleteCatalogEntry)
 
 	mux.Handle("GET /internal/v1/resolve", requireToken(s.RuntimeToken, http.HandlerFunc(s.resolve)))
 	mux.Handle("GET /internal/v1/flows/{flow_id}/draft", requireToken(s.RuntimeToken, http.HandlerFunc(s.internalDraft)))
@@ -323,13 +326,14 @@ func (s *Server) me(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, principal(r))
 }
 
-// POST /v1/validate — check a flow without saving it (for the UI, as you type).
+// POST /v1/validate[?team=x] — check a flow without saving it (for the UI, as
+// you type). With team, the model catalog is checked as it would be for that team.
 func (s *Server) validate(w http.ResponseWriter, r *http.Request) {
 	body, ok := readBody(w, r)
 	if !ok {
 		return
 	}
-	_, problems, err := checkSpec(body, "")
+	_, problems, err := s.checkFlow(r.Context(), body, "", r.URL.Query().Get("team"))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "not valid JSON: "+err.Error())
 		return
@@ -374,11 +378,26 @@ func (s *Server) putDraft(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	catalogTeam := team // a new flow's team; an existing flow's own team
+	if catalogTeam == "" {
+		t, err := s.Store.FlowTeam(r.Context(), id)
+		if err != nil {
+			s.fail(w, err)
+			return
+		}
+		catalogTeam = t
+	}
 	decoded, problems, err := checkSpec(body, id)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "not valid JSON: "+err.Error())
 		return
 	}
+	entries, err := s.Store.ListCatalog(r.Context())
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	problems = append(problems, catalogProblems(entries, decoded, catalogTeam)...)
 	name := id
 	if root, ok := decoded.(*flowspec.Object); ok {
 		if n, ok := root.Values["name"].(string); ok && n != "" {
@@ -439,6 +458,11 @@ func (s *Server) getDraft(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
+	// Check again rather than show the problems found when it was saved: the
+	// model catalog may have changed since (e.g. a model switched off).
+	if _, problems, err := s.checkFlow(r.Context(), d.Spec, f.FlowID, f.Team); err == nil {
+		d.Problems = problems
+	}
 	writeJSON(w, http.StatusOK, d)
 }
 
@@ -451,7 +475,7 @@ func (s *Server) publish(w http.ResponseWriter, r *http.Request) {
 	}
 	id := f.FlowID
 	v, unchanged, err := s.Store.Publish(r.Context(), id, actor(r), func(spec []byte) []string {
-		_, problems, err := checkSpec(spec, id)
+		_, problems, err := s.checkFlow(r.Context(), spec, id, f.Team)
 		if err != nil {
 			return []string{"(top level): not valid JSON: " + err.Error()}
 		}
