@@ -70,6 +70,19 @@ EXIT_GOODBYE = (
     "speaking, and say goodbye."
 )
 
+# Added to every question (date of birth, name, a custom field...). LiveKit's
+# ready-made question tasks bring their own prompt, which knows nothing about
+# the flow, is written with English examples, and says to "ignore unrelated
+# input". These lines bring the flow's persona and rules back in.
+QUESTION_RULES = (
+    "While asking this question, keep following the persona and rules above:\n"
+    "- Ask, confirm and read back in the language the caller is speaking, as the persona "
+    "describes (any examples given earlier are only in English).\n"
+    "- If the caller says something unrelated to this question, don't ignore it: reply "
+    "briefly as the persona and rules say (for example, say what this line is for), "
+    "then ask the question again."
+)
+
 IST = ZoneInfo("Asia/Kolkata")
 NOT_PROVIDED = "(not provided)"
 
@@ -150,6 +163,18 @@ def compose_instructions(state: CallState, node_id: str, body: str) -> str:
             + "\n".join(f"- {k}: {v}" for k, v in collected.items())
         )
     parts.append(f"Current step ({node_id}):\n{state.render(body).strip()}")
+    return "\n\n".join(parts)
+
+
+def question_context(state: CallState) -> str:
+    """The flow's persona and guardrails, for a single question inside a collect step."""
+    flow = state.flow
+    parts = ["About this call:\n" + state.render(flow.persona).strip()]
+    if flow.guardrails:
+        parts.append(
+            "Rules you must always follow:\n" + "\n".join(f"- {state.render(g)}" for g in flow.guardrails)
+        )
+    parts.append(QUESTION_RULES)
     return "\n\n".join(parts)
 
 
@@ -331,7 +356,8 @@ class CustomFieldTask(AgentTask[Any]):
         exit_rule = f"\n{EXIT_RULE}" if state.flow.allow_end_call_anywhere else ""
         super().__init__(
             instructions=(
-                f"Ask the caller for: {f.description}.{extra}\n"
+                f"{question_context(state)}\n\n"
+                f"Current question: ask the caller for: {f.description}.{extra}\n"
                 "Ask one short question. If the answer is unclear, ask again briefly. "
                 f"When you have it, call record_{f.name}.{exit_rule}"
             ),
@@ -357,11 +383,15 @@ class _DigitsTaskWithExit(GetDtmfTask):
 
 
 def _builtin_task(state: CallState, f, chat_ctx: llm.ChatContext | None) -> AgentTask:
-    extra = state.render(f.instructions) if f.instructions else ""
+    # LiveKit's built-in tasks have their own instructions; add the flow's persona
+    # and rules, this field's own instructions, and (if allowed) ending the call.
+    parts = [question_context(state)]
+    if f.instructions:
+        parts.append(state.render(f.instructions))
     tools = exit_tools(state)
     if tools:
-        # LiveKit's built-in tasks have their own instructions, so tell them about ending too.
-        extra = f"{extra}\n{EXIT_RULE}".strip()
+        parts.append(EXIT_RULE)
+    extra = "\n\n".join(parts)
     if isinstance(f, BuiltinNameField):
         return GetNameTask(
             first_name=True,
