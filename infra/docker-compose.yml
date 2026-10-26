@@ -80,6 +80,8 @@ services:
       LIVEKIT_URL: ${LIVEKIT_URL:-}
       LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:-}
       LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:-}
+      # Call history (counts and timings only, no call content) is deleted after this many days.
+      CALL_RETENTION_DAYS: ${CALL_RETENTION_DAYS:-90}
     ports:
       # Same as LiteLLM: only from the EC2 machine itself (or an SSH tunnel).
       - "127.0.0.1:8080:8080"

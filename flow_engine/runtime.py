@@ -77,9 +77,25 @@ NOT_PROVIDED = "(not provided)"
 EndCallFactory = Callable[[str, str], list[llm.Tool | llm.Toolset]]
 
 
-def default_end_call(goodbye: str, extra_description: str) -> list[llm.Tool | llm.Toolset]:
+def default_end_call(
+    goodbye: str, extra_description: str, on_called: Callable[[], None] | None = None
+) -> list[llm.Tool | llm.Toolset]:
+    """on_called runs when the agent decides to hang up (call history uses it to
+    tell "the agent ended the call" apart from "the caller hung up")."""
+
+    async def called(_ev: Any) -> None:
+        if on_called:
+            try:
+                on_called()
+            except Exception:
+                logger.exception("end-call hook failed")
+
     # delete_room=True closes the LiveKit room, which hangs up the phone call.
-    return [EndCallTool(extra_description=extra_description, delete_room=True, end_instructions=goodbye)]
+    return [
+        EndCallTool(
+            extra_description=extra_description, delete_room=True, end_instructions=goodbye, on_tool_called=called
+        )
+    ]
 
 
 @dataclass

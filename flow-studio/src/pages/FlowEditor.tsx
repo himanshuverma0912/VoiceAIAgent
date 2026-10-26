@@ -7,7 +7,7 @@ import { SettingsEditor } from "../components/SettingsEditor";
 import { TestCall } from "../components/TestCall";
 import { toast } from "../components/ui";
 import { NODE_WIDTH, autoLayout, positionsFor, type Positions } from "../layout";
-import { Link, setLeaveGuard } from "../router";
+import { Link, navigate, setLeaveGuard } from "../router";
 import {
   NODE_TYPE_LABEL,
   clone,
@@ -351,6 +351,9 @@ export function FlowEditor({ me, flowId }: { me: Me; flowId: string }) {
           </button>
         )}
         <button onClick={() => setDialog("versions")}>History</button>
+        <button onClick={() => navigate(`/flows/${flowId}/calls`)} title="How calls on this flow went">
+          Calls
+        </button>
         {(editable || publishable) && (
           <button onClick={startTest} disabled={testing || saving} title="Talk to this draft from your browser (up to 5 minutes)">
             🎙 Test call

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { ApiError, api, type Me } from "./api";
 import { completeSignIn, justSignedOut, markSilentTried, shouldTrySilent, signOut, startSignIn } from "./auth";
 import { Toasts } from "./components/ui";
+import { CallHistory } from "./pages/CallHistory";
 import { FlowEditor } from "./pages/FlowEditor";
 import { FlowList } from "./pages/FlowList";
 import { Link, usePath } from "./router";
@@ -47,6 +48,8 @@ export function App() {
 
 function Routes({ me }: { me: Me }) {
   const path = usePath();
+  const calls = /^\/flows\/([a-z][a-z0-9_]*)\/calls\/?$/.exec(path);
+  if (calls) return <CallHistory key={calls[1]} flowId={calls[1]} />;
   const m = /^\/flows\/([a-z][a-z0-9_]*)\/?$/.exec(path);
   if (m) return <FlowEditor key={m[1]} me={me} flowId={m[1]} />;
   return <FlowList me={me} />;

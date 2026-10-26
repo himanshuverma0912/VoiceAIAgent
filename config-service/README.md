@@ -5,7 +5,12 @@ published versions, and which phone number runs which flow, in its own Postgres
 (`platform-db`). The voice agent asks it which flow to run at the start of each
 call, so publishing a change applies from the next call, with no redeploy.
 
-No call data is stored here: only configuration and an audit log of who changed it.
+Besides configuration and an audit log of who changed it, it keeps a
+content-free **call history**: for each call, which flow version ran, the steps
+it went through and how long each took, how it ended, reply speed and usage
+totals. Never the caller's number, the room name, anything said, or any value
+the caller gave (records with any other field are refused). Kept for
+`CALL_RETENTION_DAYS` (default 90), then deleted.
 
 ## How a change goes live
 
@@ -33,7 +38,7 @@ No call data is stored here: only configuration and an audit log of who changed 
 
   Each flow belongs to one team. Flows of other teams answer 404.
 - **Scripts and CI** use `ADMIN_TOKEN` (acts as a platform admin).
-- **The voice agent** uses `RUNTIME_TOKEN`, which only works on `/internal/v1/resolve`.
+- **The voice agent** uses `RUNTIME_TOKEN`, which only works on `/internal/v1/...`.
 
 ## API
 
@@ -56,8 +61,11 @@ All `/v1` routes need `Authorization: Bearer <token>`. Through Caddy they're at
 | `GET /v1/audit?limit=100` | platform-admin | Who changed what |
 | `PUT /v1/flows/{flow_id}/layout` | flow-editor | Where Flow Studio draws the nodes (not part of the flow) |
 | `POST /v1/flows/{flow_id}/test-sessions` | flow-editor or flow-publisher | "Test call": a LiveKit room token with the agent dispatched to run the saved draft (5 minutes; 20 per person per hour) |
+| `GET /v1/flows/{flow_id}/calls?days=7&channel=phone&limit=50` | viewer | Recent calls (channel `phone`, `studio_test` or `all`) |
+| `GET /v1/flows/{flow_id}/calls/summary?days=7&channel=phone` | viewer | Outcomes, durations, reply speed, where callers drop off, per version and per day |
 | `GET /internal/v1/resolve?number=...` | RUNTIME_TOKEN | For the agent: the flow a number runs now; ETag / 304 |
 | `GET /internal/v1/flows/{flow_id}/draft` | RUNTIME_TOKEN | For the agent in a test call: the saved draft (422 if it has problems) |
+| `POST /internal/v1/calls` | RUNTIME_TOKEN | For the agent when a call ends: its call-history record (sending it again is a no-op) |
 
 Saving a draft with `If-Match: "<checksum>"` (from GET draft) fails with 409 if someone
 else saved in between; `If-None-Match: *` creates a new flow only if the id is free.

@@ -37,6 +37,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -133,9 +134,18 @@ func run(addr string) error {
 		slog.Warn("LIVEKIT_URL / LIVEKIT_API_KEY / LIVEKIT_API_SECRET not set: browser test calls are off")
 	}
 
+	st := store.New(db)
+
+	// Call history is kept for CALL_RETENTION_DAYS (default 90), then deleted.
+	retention, err := strconv.Atoi(env("CALL_RETENTION_DAYS", "90"))
+	if err != nil || retention < 1 || retention > 730 {
+		return errors.New("CALL_RETENTION_DAYS must be a number of days between 1 and 730")
+	}
+	go purgeOldCalls(ctx, st, retention)
+
 	srv := &http.Server{
 		Addr:              addr,
-		Handler:           (&api.Server{Store: store.New(db), AdminToken: admin, RuntimeToken: runtime, Users: users, LiveKit: lk}).Handler(),
+		Handler:           (&api.Server{Store: st, AdminToken: admin, RuntimeToken: runtime, Users: users, LiveKit: lk}).Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      15 * time.Second,
@@ -154,6 +164,24 @@ func run(addr string) error {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	return srv.Shutdown(shutdownCtx)
+}
+
+// purgeOldCalls deletes call history older than the retention period, at
+// start-up and then every 6 hours.
+func purgeOldCalls(ctx context.Context, st *store.Store, days int) {
+	for {
+		n, err := st.PurgeCalls(ctx, time.Now().AddDate(0, 0, -days))
+		if err != nil && ctx.Err() == nil {
+			slog.Error("couldn't delete old call history", "error", err)
+		} else if n > 0 {
+			slog.Info("deleted old call history", "calls", n, "older_than_days", days)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(6 * time.Hour):
+		}
+	}
 }
 
 func runHealthcheck(addr string) int {

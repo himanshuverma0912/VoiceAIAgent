@@ -6,7 +6,7 @@
 //	token of a signed-in person (their roles and teams decide what they may do)
 //	or ADMIN_TOKEN (scripts and CI; acts as a platform admin).
 //
-// /internal/v1/...  the voice agent: which flow a number runs.
+// /internal/v1/...  the voice agent: which flow a number runs; call history.
 //
 //	Needs "Authorization: Bearer <RUNTIME_TOKEN>".
 //
@@ -82,9 +82,12 @@ func (s *Server) Handler() http.Handler {
 	v1("PUT /v1/numbers/{number}", s.putNumber)
 	v1("DELETE /v1/numbers/{number}", s.deleteNumber)
 	v1("GET /v1/audit", s.audit)
+	v1("GET /v1/flows/{flow_id}/calls", s.listCalls)
+	v1("GET /v1/flows/{flow_id}/calls/summary", s.callSummary)
 
 	mux.Handle("GET /internal/v1/resolve", requireToken(s.RuntimeToken, http.HandlerFunc(s.resolve)))
 	mux.Handle("GET /internal/v1/flows/{flow_id}/draft", requireToken(s.RuntimeToken, http.HandlerFunc(s.internalDraft)))
+	mux.Handle("POST /internal/v1/calls", requireToken(s.RuntimeToken, http.HandlerFunc(s.addCall)))
 	return logRequests(mux)
 }
 

@@ -44,7 +44,9 @@ from livekit.agents import (
 from livekit.plugins import cartesia, deepgram, noise_cancellation, openai
 
 from flow_engine import Flow, load_flow
-from flow_engine.runtime import CallState, start_agent
+from flow_engine.calllog import CallRecorder, send_record
+from flow_engine.runtime import CallState, default_end_call, start_agent
+from flow_engine.spec import EndNode
 from flow_engine.source import FlowSource
 
 logger = logging.getLogger("voice-agent")
@@ -201,6 +203,14 @@ def _report_steps(room: rtc.Room):
     return report
 
 
+def _both(*hooks):
+    def call(node_id: str) -> None:
+        for hook in hooks:
+            hook(node_id)
+
+    return call
+
+
 @server.rtc_session(agent_name=AGENT_NAME)
 async def entrypoint(ctx: agents.JobContext) -> None:
     meta = _job_metadata(ctx)
@@ -227,11 +237,23 @@ async def entrypoint(ctx: agents.JobContext) -> None:
         resolved = await FLOWS.flow_for(dialed_number, http)
     flow = resolved.flow
 
+    # Call history: counts and timings only (no number, no words, no values);
+    # sent to the config service when the call ends. See flow_engine/calllog.py.
+    recorder = CallRecorder(
+        call_id=ctx.job.id,  # never the room name: for phone calls it contains the caller's number
+        channel="studio_test" if studio_test else "phone",
+        flow_id=flow.flow_id,
+        flow_version=resolved.version,
+        flow_source=resolved.source,
+        end_node_ids={k for k, n in flow.nodes.items() if isinstance(n, EndNode)},
+    )
+
     state = CallState(
         flow=flow,
         caller_number=caller_number,
         dialed_number=dialed_number,
-        on_node=_report_steps(ctx.room),
+        on_node=_both(_report_steps(ctx.room), recorder.node_entered),
+        end_call=lambda goodbye, desc: default_end_call(goodbye, desc, on_called=recorder.agent_ended_call),
     )
     logger.info(
         "call started",
@@ -249,6 +271,7 @@ async def entrypoint(ctx: agents.JobContext) -> None:
         async def end_at_time_limit() -> None:
             await asyncio.sleep(limit)
             logger.info("Flow Studio test call reached its time limit", extra={"seconds": limit})
+            recorder.time_limit_reached()
             await ctx.delete_room()
 
         timer = asyncio.create_task(end_at_time_limit())
@@ -287,6 +310,13 @@ async def entrypoint(ctx: agents.JobContext) -> None:
             },
         ),
     )
+
+    recorder.attach(session)
+
+    async def send_call_record() -> None:
+        await send_record(_env("CONFIG_SERVICE_URL"), _env("CONFIG_SERVICE_TOKEN"), recorder.record(session.usage))
+
+    ctx.add_shutdown_callback(send_call_record)
 
     # The flow's start node becomes the first agent; it plays the flow's greeting.
     await session.start(
