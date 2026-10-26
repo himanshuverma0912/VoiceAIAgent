@@ -67,6 +67,7 @@ export interface FlowSettings {
   language?: string;
   llm_model?: string | null;
   llm_temperature?: number;
+  stt_model?: string | null;
   tts_voice_id?: string | null;
 }
 

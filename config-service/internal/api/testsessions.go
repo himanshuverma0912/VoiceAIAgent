@@ -74,7 +74,7 @@ func (s *Server) startTestSession(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
-	_, problems, err := checkSpec(draft.Spec, f.FlowID)
+	_, problems, err := s.checkFlow(r.Context(), draft.Spec, f.FlowID, f.Team)
 	if err != nil || len(problems) > 0 {
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{"error": "fix the draft's problems before testing it", "problems": problems})
 		return
@@ -117,7 +117,12 @@ func (s *Server) internalDraft(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
-	if _, problems, err := checkSpec(d.Spec, id); err != nil || len(problems) > 0 {
+	team, err := s.Store.FlowTeam(r.Context(), id)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	if _, problems, err := s.checkFlow(r.Context(), d.Spec, id, team); err != nil || len(problems) > 0 {
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{"error": "the draft has problems", "problems": problems})
 		return
 	}

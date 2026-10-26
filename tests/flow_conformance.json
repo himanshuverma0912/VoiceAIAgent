@@ -5196,6 +5196,287 @@
     "problems": []
   },
   {
+    "name": "stt model set",
+    "flow": {
+      "schema_version": 1,
+      "flow_id": "demo",
+      "name": "Demo",
+      "persona": "You help callers.",
+      "guardrails": [
+        "Be polite."
+      ],
+      "greeting": "Hello",
+      "allow_end_call_anywhere": true,
+      "settings": {
+        "language": "hi",
+        "llm_model": "voice-fast",
+        "llm_temperature": 0,
+        "tts_voice_id": null,
+        "stt_model": "nova-2"
+      },
+      "start_node": "ask",
+      "nodes": {
+        "ask": {
+          "type": "agent",
+          "on_enter": "wait",
+          "instructions": "Ask what they need.",
+          "transitions": [
+            {
+              "to": "details",
+              "when": "They said what they need.",
+              "capture": {
+                "topic": {
+                  "type": "string",
+                  "description": "Topic",
+                  "enum": [
+                    "a",
+                    "b"
+                  ]
+                },
+                "count": {
+                  "type": "integer",
+                  "description": "How many",
+                  "required": false
+                }
+              }
+            }
+          ]
+        },
+        "details": {
+          "type": "collect",
+          "instructions": "Collect details.",
+          "fields": [
+            {
+              "name": "full_name",
+              "builtin": "name",
+              "options": {
+                "last_name": true,
+                "verify_spelling": false
+              }
+            },
+            {
+              "name": "phone",
+              "builtin": "phone",
+              "instructions": "Caller is {{caller_number}}."
+            },
+            {
+              "name": "pin",
+              "builtin": "digits",
+              "options": {
+                "num_digits": 4,
+                "ask_for_confirmation": false
+              }
+            },
+            {
+              "name": "city",
+              "type": "string",
+              "description": "City",
+              "enum": [
+                "x",
+                "y"
+              ]
+            }
+          ],
+          "next": "done"
+        },
+        "done": {
+          "type": "end",
+          "instructions": "Thank {{full_name}} about {{topic}} at {{now_ist}}.",
+          "goodbye": "Bye."
+        }
+      }
+    },
+    "problems": []
+  },
+  {
+    "name": "stt model null",
+    "flow": {
+      "schema_version": 1,
+      "flow_id": "demo",
+      "name": "Demo",
+      "persona": "You help callers.",
+      "guardrails": [
+        "Be polite."
+      ],
+      "greeting": "Hello",
+      "allow_end_call_anywhere": true,
+      "settings": {
+        "language": "hi",
+        "llm_model": "voice-fast",
+        "llm_temperature": 0,
+        "tts_voice_id": null,
+        "stt_model": null
+      },
+      "start_node": "ask",
+      "nodes": {
+        "ask": {
+          "type": "agent",
+          "on_enter": "wait",
+          "instructions": "Ask what they need.",
+          "transitions": [
+            {
+              "to": "details",
+              "when": "They said what they need.",
+              "capture": {
+                "topic": {
+                  "type": "string",
+                  "description": "Topic",
+                  "enum": [
+                    "a",
+                    "b"
+                  ]
+                },
+                "count": {
+                  "type": "integer",
+                  "description": "How many",
+                  "required": false
+                }
+              }
+            }
+          ]
+        },
+        "details": {
+          "type": "collect",
+          "instructions": "Collect details.",
+          "fields": [
+            {
+              "name": "full_name",
+              "builtin": "name",
+              "options": {
+                "last_name": true,
+                "verify_spelling": false
+              }
+            },
+            {
+              "name": "phone",
+              "builtin": "phone",
+              "instructions": "Caller is {{caller_number}}."
+            },
+            {
+              "name": "pin",
+              "builtin": "digits",
+              "options": {
+                "num_digits": 4,
+                "ask_for_confirmation": false
+              }
+            },
+            {
+              "name": "city",
+              "type": "string",
+              "description": "City",
+              "enum": [
+                "x",
+                "y"
+              ]
+            }
+          ],
+          "next": "done"
+        },
+        "done": {
+          "type": "end",
+          "instructions": "Thank {{full_name}} about {{topic}} at {{now_ist}}.",
+          "goodbye": "Bye."
+        }
+      }
+    },
+    "problems": []
+  },
+  {
+    "name": "stt model a number",
+    "flow": {
+      "schema_version": 1,
+      "flow_id": "demo",
+      "name": "Demo",
+      "persona": "You help callers.",
+      "guardrails": [
+        "Be polite."
+      ],
+      "greeting": "Hello",
+      "allow_end_call_anywhere": true,
+      "settings": {
+        "language": "hi",
+        "llm_model": "voice-fast",
+        "llm_temperature": 0,
+        "tts_voice_id": null,
+        "stt_model": 3
+      },
+      "start_node": "ask",
+      "nodes": {
+        "ask": {
+          "type": "agent",
+          "on_enter": "wait",
+          "instructions": "Ask what they need.",
+          "transitions": [
+            {
+              "to": "details",
+              "when": "They said what they need.",
+              "capture": {
+                "topic": {
+                  "type": "string",
+                  "description": "Topic",
+                  "enum": [
+                    "a",
+                    "b"
+                  ]
+                },
+                "count": {
+                  "type": "integer",
+                  "description": "How many",
+                  "required": false
+                }
+              }
+            }
+          ]
+        },
+        "details": {
+          "type": "collect",
+          "instructions": "Collect details.",
+          "fields": [
+            {
+              "name": "full_name",
+              "builtin": "name",
+              "options": {
+                "last_name": true,
+                "verify_spelling": false
+              }
+            },
+            {
+              "name": "phone",
+              "builtin": "phone",
+              "instructions": "Caller is {{caller_number}}."
+            },
+            {
+              "name": "pin",
+              "builtin": "digits",
+              "options": {
+                "num_digits": 4,
+                "ask_for_confirmation": false
+              }
+            },
+            {
+              "name": "city",
+              "type": "string",
+              "description": "City",
+              "enum": [
+                "x",
+                "y"
+              ]
+            }
+          ],
+          "next": "done"
+        },
+        "done": {
+          "type": "end",
+          "instructions": "Thank {{full_name}} about {{topic}} at {{now_ist}}.",
+          "goodbye": "Bye."
+        }
+      }
+    },
+    "problems": [
+      "settings.stt_model: Input should be a valid string"
+    ]
+  },
+  {
     "name": "collect missing next",
     "flow": {
       "schema_version": 1,

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ApiError, api, can, type FlowSummary, type Me } from "../api";
+import { ApiError, api, can, type CatalogEntry, type FlowSummary, type Me } from "../api";
 import { Canvas, type Selection } from "../components/Canvas";
 import { NodeEditor } from "../components/NodeEditor";
 import { PublishDialog, VersionsDialog } from "../components/Review";
@@ -45,6 +45,11 @@ export function FlowEditor({ me, flowId }: { me: Me; flowId: string }) {
   const [dialog, setDialog] = useState<null | "publish" | "versions">(null);
   const [testing, setTesting] = useState(false);
   const [activeNode, setActiveNode] = useState<string | null>(null);
+  const [catalog, setCatalog] = useState<CatalogEntry[] | null>(null);
+
+  useEffect(() => {
+    api.catalog().then(setCatalog, () => setCatalog([]));
+  }, []);
 
   // ── load ──
   useEffect(() => {
@@ -90,14 +95,14 @@ export function FlowEditor({ me, flowId }: { me: Me; flowId: string }) {
     const seq = ++checkSeq.current;
     const timer = setTimeout(async () => {
       try {
-        const res = await api.validate(text);
+        const res = await api.validate(text, summary?.team || undefined);
         if (seq === checkSeq.current) setProblems(res.problems);
       } catch (e) {
         if (seq === checkSeq.current) setProblems([`(top level): ${(e as Error).message}`]);
       }
     }, 450);
     return () => clearTimeout(timer);
-  }, [spec, jsonText, mode, dirty]);
+  }, [spec, jsonText, mode, dirty, summary?.team]);
 
   // ── editing ──
   /** Change the flow in place: fn gets a copy to modify (its return value is ignored). */
@@ -464,6 +469,8 @@ export function FlowEditor({ me, flowId }: { me: Me; flowId: string }) {
           ) : flow ? (
             <SettingsEditor
               flow={flow}
+              team={summary.team}
+              catalog={catalog}
               editable={editable}
               problems={grouped.general}
               vars={vars}

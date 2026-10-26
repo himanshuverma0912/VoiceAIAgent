@@ -179,6 +179,9 @@ CASES = [
     case("transition name null", set_path(ASK_T + ["name"], None)),
     case("language with region", set_path(["settings", "language"], "hi-IN")),
     case("language multi", set_path(["settings", "language"], "multi")),
+    case("stt model set", set_path(["settings", "stt_model"], "nova-2")),
+    case("stt model null", set_path(["settings", "stt_model"], None)),
+    case("stt model a number", set_path(["settings", "stt_model"], 3)),
     case("collect missing next", delete_path(["nodes", "details", "next"])),
     case("unknown key in options", set_path(FIELDS + [2, "options", "digits"], 4)),
     case(

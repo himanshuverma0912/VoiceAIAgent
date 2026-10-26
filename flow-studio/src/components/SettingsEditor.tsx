@@ -1,4 +1,5 @@
-import { problemText, type Flow } from "../spec";
+import { offeredTo, type CatalogEntry, type CatalogKind } from "../api";
+import { problemText, type Flow, type FlowSettings } from "../spec";
 import { Check, Field, VarText } from "./ui";
 
 const LANGUAGES = [
@@ -9,8 +10,57 @@ const LANGUAGES = [
   { code: "multi", label: "Several languages (multi)" },
 ];
 
+type ModelSetting = "llm_model" | "stt_model" | "tts_voice_id";
+
+const MODEL_FIELDS: { kind: CatalogKind; setting: ModelSetting; label: string; fallback: string }[] = [
+  { kind: "llm", setting: "llm_model", label: "LLM", fallback: "the agent's default (LLM_MODEL, normally voice-fast)" },
+  { kind: "stt", setting: "stt_model", label: "Speech-to-text model", fallback: "Deepgram Nova-3" },
+  { kind: "tts_voice", setting: "tts_voice_id", label: "Voice", fallback: "the agent's default voice" },
+];
+
+/** A dropdown of the catalog's entries of one kind that this flow's team may use. */
+function ModelSelect(props: {
+  kind: CatalogKind;
+  setting: ModelSetting;
+  fallback: string;
+  value: string;
+  team: string;
+  language: string;
+  catalog: CatalogEntry[] | null;
+  disabled: boolean;
+  onChange: (v: string) => void;
+}) {
+  const all = (props.catalog ?? []).filter((e) => e.kind === props.kind);
+  const offered = all.filter((e) => offeredTo(e, props.team));
+  const current = all.find((e) => e.model_id === props.value);
+  const listed = offered.some((e) => e.model_id === props.value);
+  const langNote = (e: CatalogEntry) => (e.languages.length ? ` · ${e.languages.join(", ")}` : "");
+  return (
+    <>
+      <select value={props.value} disabled={props.disabled || props.catalog === null} onChange={(e) => props.onChange(e.target.value)}>
+        <option value="">Default: {props.fallback}</option>
+        {props.value && !listed && (
+          <option value={props.value}>
+            {current ? `${current.label} (${current.enabled ? "not offered to this team" : "switched off"})` : `${props.value} (not in the catalog)`}
+          </option>
+        )}
+        {offered.map((e) => (
+          <option key={e.model_id} value={e.model_id}>
+            {e.label}
+            {props.kind === "tts_voice" ? langNote(e) : ` (${e.model_id})${langNote(e)}`}
+          </option>
+        ))}
+      </select>
+      {current?.notes && <div className="hint">{current.notes}</div>}
+      {props.catalog !== null && offered.length === 0 && <div className="hint">Nothing in the model catalog for this team yet; ask a platform admin.</div>}
+    </>
+  );
+}
+
 export function SettingsEditor(props: {
   flow: Flow;
+  team: string;
+  catalog: CatalogEntry[] | null;
   editable: boolean;
   problems: string[];
   vars: { name: string; about: string }[];
@@ -25,6 +75,21 @@ export function SettingsEditor(props: {
       fn(f.settings);
     });
   const guardrails = flow.guardrails ?? [];
+  const modelField = (m: (typeof MODEL_FIELDS)[number]) => (
+    <Field key={m.setting} label={m.label}>
+      <ModelSelect
+        kind={m.kind}
+        setting={m.setting}
+        fallback={m.fallback}
+        value={(s[m.setting] as string | null | undefined) ?? ""}
+        team={props.team}
+        language={s.language ?? "hi"}
+        catalog={props.catalog}
+        disabled={!ed}
+        onChange={(v) => setSetting((x: FlowSettings) => (v ? (x[m.setting] = v) : delete x[m.setting]))}
+      />
+    </Field>
+  );
   const nodeIds = Object.keys(flow.nodes);
 
   return (
@@ -119,17 +184,7 @@ export function SettingsEditor(props: {
             ))}
           </select>
         </Field>
-        <Field label="Model" hint="A model name set up in LiteLLM, e.g. voice-fast.">
-          <input
-            list="model-aliases"
-            value={s.llm_model ?? ""}
-            disabled={!ed}
-            onChange={(e) => setSetting((x) => (e.target.value ? (x.llm_model = e.target.value) : delete x.llm_model))}
-          />
-          <datalist id="model-aliases">
-            <option value="voice-fast" />
-          </datalist>
-        </Field>
+        {MODEL_FIELDS.filter((m) => m.kind === "llm").map((m) => modelField(m))}
         <Field label="Creativity (temperature)" hint="0 = most predictable. Keep it low for banking flows.">
           <input
             type="number"
@@ -141,14 +196,8 @@ export function SettingsEditor(props: {
             onChange={(e) => setSetting((x) => (x.llm_temperature = e.target.value === "" ? 0 : Number(e.target.value)))}
           />
         </Field>
-        <Field label="Cartesia voice id (optional)" hint="Empty = the agent's default voice.">
-          <input
-            className="mono"
-            value={s.tts_voice_id ?? ""}
-            disabled={!ed}
-            onChange={(e) => setSetting((x) => (e.target.value ? (x.tts_voice_id = e.target.value) : delete x.tts_voice_id))}
-          />
-        </Field>
+        {MODEL_FIELDS.filter((m) => m.kind !== "llm").map((m) => modelField(m))}
+        <p className="hint">The lists come from the model catalog, set up by platform admins.</p>
       </div>
 
       {nodeIds.length > 0 && (

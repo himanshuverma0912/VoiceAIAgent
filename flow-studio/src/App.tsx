@@ -5,6 +5,7 @@ import { Toasts } from "./components/ui";
 import { CallHistory } from "./pages/CallHistory";
 import { FlowEditor } from "./pages/FlowEditor";
 import { FlowList } from "./pages/FlowList";
+import { ModelCatalog } from "./pages/ModelCatalog";
 import { Link, usePath } from "./router";
 
 type State = { phase: "loading" } | { phase: "signed-out"; error?: string } | { phase: "ready"; me: Me };
@@ -50,6 +51,7 @@ function Routes({ me }: { me: Me }) {
   const path = usePath();
   const calls = /^\/flows\/([a-z][a-z0-9_]*)\/calls\/?$/.exec(path);
   if (calls) return <CallHistory key={calls[1]} flowId={calls[1]} />;
+  if (/^\/admin\/models\/?$/.test(path) && me.roles.includes("platform-admin")) return <ModelCatalog />;
   const m = /^\/flows\/([a-z][a-z0-9_]*)\/?$/.exec(path);
   if (m) return <FlowEditor key={m[1]} me={me} flowId={m[1]} />;
   return <FlowList me={me} />;
@@ -62,6 +64,11 @@ function TopBar({ me }: { me: Me }) {
         <img src="/favicon.svg" alt="" />
         Flow Studio
       </Link>
+      {me.roles.includes("platform-admin") && (
+        <Link to="/admin/models" className="link">
+          Model catalog
+        </Link>
+      )}
       <span className="spacer" />
       <div className="user">
         <div>{me.name || me.email}</div>
