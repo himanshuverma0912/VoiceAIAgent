@@ -1,0 +1,2 @@
+# The MCP Python SDK brings Starlette and Uvicorn.
+mcp==2.3.0

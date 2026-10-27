@@ -49,6 +49,7 @@ from flow_engine.language import LanguageHint
 from flow_engine.runtime import CallState, default_end_call, start_agent
 from flow_engine.spec import EndNode
 from flow_engine.source import FlowSource
+from flow_engine.tools import ToolCaller
 
 logger = logging.getLogger("voice-agent")
 
@@ -269,12 +270,26 @@ async def entrypoint(ctx: agents.JobContext) -> None:
         end_node_ids={k for k, n in flow.nodes.items() if isinstance(n, EndNode)},
     )
 
+    # The flow's integrations (bank APIs, MCP servers). Credentials come from this
+    # container's INTEGRATION_... variables; MCP servers are connected right away,
+    # while the greeting plays.
+    tools = None
+    if resolved.integrations:
+        tools = ToolCaller(resolved.integrations, http=http, on_used=recorder.tool_used)
+        tools.warm_up()
+
+        async def close_tools() -> None:
+            await tools.aclose()
+
+        ctx.add_shutdown_callback(close_tools)
+
     state = CallState(
         flow=flow,
         caller_number=caller_number,
         dialed_number=dialed_number,
         on_node=_both(_report_steps(ctx.room), recorder.node_entered),
         end_call=lambda goodbye, desc: default_end_call(goodbye, desc, on_called=recorder.agent_ended_call),
+        tools=tools,
     )
     logger.info(
         "call started",
@@ -283,6 +298,7 @@ async def entrypoint(ctx: agents.JobContext) -> None:
             "flow_version": resolved.version,
             "flow_source": resolved.source,
             "draft_checksum": resolved.checksum,
+            "integrations": sorted(resolved.integrations),
         },
     )
 

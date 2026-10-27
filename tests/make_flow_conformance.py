@@ -245,6 +245,75 @@ CASES = [
 ]
 
 
+# ── tools and API steps ──
+
+API_BASE = copy.deepcopy(BASE)
+API_BASE["tools"] = [{"tool": "bank.search_faq"}]
+API_BASE["nodes"]["ask"]["tools"] = [
+    {"tool": "bank.recent_transactions", "inputs": {"card_last4": "{{pin}}"}},
+]
+API_BASE["nodes"]["details"]["next"] = "check"
+API_BASE["nodes"]["check"] = {
+    "type": "api",
+    "tool": "bank.get_card_balance",
+    "inputs": {"card_last4": "{{pin}}", "date_of_birth": "{{full_name}}"},
+    "save": ["minimum_due", "due_date"],
+    "say": "One moment, {{full_name}}.",
+    "verifies": False,
+    "next": "done",
+    "on_error": "done",
+}
+API_BASE["nodes"]["done"]["instructions"] = "Minimum due {{minimum_due}} by {{due_date}}."
+CHECK = ["nodes", "check"]
+
+
+def api_case(name: str, change) -> dict:
+    flow = copy.deepcopy(API_BASE)
+    change(flow)
+    return {"name": name, "flow": flow}
+
+
+CASES += [
+    api_case("valid flow with tools and an api step", lambda f: None),
+    api_case("api step without on_error", delete_path(CHECK + ["on_error"])),
+    api_case("api step tool without integration", set_path(CHECK + ["tool"], "get_card_balance")),
+    api_case("api step tool with capitals and dash", set_path(CHECK + ["tool"], "bank.Get-Balance")),
+    api_case("api step next is not a node", set_path(CHECK + ["next"], "dnoe")),
+    api_case("api step on_error to itself", set_path(CHECK + ["on_error"], "check")),
+    api_case("api step with instructions", set_path(CHECK + ["instructions"], "Do it.")),
+    api_case("api step bad save name", set_path(CHECK + ["save"], ["Minimum Due"])),
+    api_case("api step input is a number", set_path(CHECK + ["inputs", "count"], 5)),
+    api_case("api step say unknown variable", set_path(CHECK + ["say"], "Hold on {{who}}.")),
+    api_case("api step verifies not a boolean", set_path(CHECK + ["verifies"], "yes")),
+    api_case("api step without tool", delete_path(CHECK + ["tool"])),
+    api_case("flow tools item is a string", set_path(["tools"], ["bank.search_faq"])),
+    api_case("flow tools listed twice", set_path(["tools"], [{"tool": "bank.search_faq"}, {"tool": "help.search_faq"}])),
+    api_case("step tool also on every step", set_path(["nodes", "ask", "tools"], [{"tool": "bank.search_faq"}])),
+    api_case(
+        "step tool listed twice",
+        set_path(["nodes", "ask", "tools"], [{"tool": "bank.find_branch"}, {"tool": "other.find_branch"}]),
+    ),
+    api_case("step tool named like a transition", set_path(["nodes", "ask", "tools"], [{"tool": "bank.go_to_details"}])),
+    api_case("transition named like a flow tool", set_path(ASK_T + ["name"], "search_faq")),
+    api_case("step tool unknown key", set_path(["nodes", "ask", "tools", 0, "locked"], True)),
+    api_case("tool input unknown variable", set_path(["tools", 0, "inputs"], {"q": "{{question_text}}"})),
+    api_case("save collides with a collected field", set_path(CHECK + ["save"], ["city"])),
+    api_case("save shadows a built-in", set_path(CHECK + ["save"], ["today_ist"])),
+    api_case("tools on a collect step", set_path(["nodes", "details", "tools"], [{"tool": "bank.search_faq"}])),
+    api_case(
+        "api step loops back so the end is unreachable",
+        many(set_path(CHECK + ["next"], "ask"), set_path(CHECK + ["on_error"], "ask")),
+    ),
+    api_case(
+        "api shape plus link plus variable",
+        many(
+            set_path(CHECK + ["sya"], "typo"),
+            set_path(CHECK + ["on_error"], "nowhere"),
+            set_path(CHECK + ["say"], "Wait {{nobody}}."),
+        ),
+    ),
+]
+
 CASES.append({"name": "top level is a list", "flow": []})
 
 

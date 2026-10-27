@@ -1053,7 +1053,7 @@
       }
     },
     "problems": [
-      "nodes.done: unknown node type 'finish'; use 'agent', 'collect' or 'end'"
+      "nodes.done: unknown node type 'finish'; use 'agent', 'collect', 'api' or 'end'"
     ]
   },
   {
@@ -1863,7 +1863,7 @@
     },
     "problems": [
       "nodes.details.fields: List should have at least 1 item after validation, not 0",
-      "nodes.done.instructions: unknown variable {{full_name}}; built-ins are caller_number, dialed_number, now_ist, today_ist, plus any captured or collected field"
+      "nodes.done.instructions: unknown variable {{full_name}}; built-ins are caller_number, dialed_number, now_ist, today_ist, plus any captured or collected field or saved API output"
     ]
   },
   {
@@ -2367,7 +2367,7 @@
     },
     "problems": [
       "nodes.ask.transitions: Input should be a valid list",
-      "nodes.done.instructions: unknown variable {{topic}}; built-ins are caller_number, dialed_number, now_ist, today_ist, plus any captured or collected field"
+      "nodes.done.instructions: unknown variable {{topic}}; built-ins are caller_number, dialed_number, now_ist, today_ist, plus any captured or collected field or saved API output"
     ]
   },
   {
@@ -2444,7 +2444,7 @@
     },
     "problems": [
       "nodes.ask.transitions[0]: Input should be a valid dictionary or instance of Transition",
-      "nodes.done.instructions: unknown variable {{topic}}; built-ins are caller_number, dialed_number, now_ist, today_ist, plus any captured or collected field"
+      "nodes.done.instructions: unknown variable {{topic}}; built-ins are caller_number, dialed_number, now_ist, today_ist, plus any captured or collected field or saved API output"
     ]
   },
   {
@@ -2525,7 +2525,7 @@
     },
     "problems": [
       "nodes.ask.transitions[0].capture: Input should be a valid dictionary",
-      "nodes.done.instructions: unknown variable {{topic}}; built-ins are caller_number, dialed_number, now_ist, today_ist, plus any captured or collected field"
+      "nodes.done.instructions: unknown variable {{topic}}; built-ins are caller_number, dialed_number, now_ist, today_ist, plus any captured or collected field or saved API output"
     ]
   },
   {
@@ -2797,7 +2797,7 @@
     },
     "problems": [
       "nodes.details.fields[0]: Input should be a valid dictionary or instance of CustomField",
-      "nodes.done.instructions: unknown variable {{full_name}}; built-ins are caller_number, dialed_number, now_ist, today_ist, plus any captured or collected field"
+      "nodes.done.instructions: unknown variable {{full_name}}; built-ins are caller_number, dialed_number, now_ist, today_ist, plus any captured or collected field or saved API output"
     ]
   },
   {
@@ -2861,7 +2861,7 @@
     },
     "problems": [
       "nodes.details.fields: Input should be a valid list",
-      "nodes.done.instructions: unknown variable {{full_name}}; built-ins are caller_number, dialed_number, now_ist, today_ist, plus any captured or collected field"
+      "nodes.done.instructions: unknown variable {{full_name}}; built-ins are caller_number, dialed_number, now_ist, today_ist, plus any captured or collected field or saved API output"
     ]
   },
   {
@@ -3235,7 +3235,7 @@
       }
     },
     "problems": [
-      "nodes.done: unknown node type '5'; use 'agent', 'collect' or 'end'"
+      "nodes.done: unknown node type '5'; use 'agent', 'collect', 'api' or 'end'"
     ]
   },
   {
@@ -7019,7 +7019,7 @@
       }
     },
     "problems": [
-      "nodes.done.goodbye: unknown variable {{custmer}}; built-ins are caller_number, dialed_number, now_ist, today_ist, plus any captured or collected field"
+      "nodes.done.goodbye: unknown variable {{custmer}}; built-ins are caller_number, dialed_number, now_ist, today_ist, plus any captured or collected field or saved API output"
     ]
   },
   {
@@ -7304,7 +7304,3092 @@
     "problems": [
       "nodes.ask.instrucions: unknown key (check the spelling)",
       "nodes.ask.transitions[0].to: 'dnoe' is not a node",
-      "nodes.done.goodbye: unknown variable {{who}}; built-ins are caller_number, dialed_number, now_ist, today_ist, plus any captured or collected field"
+      "nodes.done.goodbye: unknown variable {{who}}; built-ins are caller_number, dialed_number, now_ist, today_ist, plus any captured or collected field or saved API output"
+    ]
+  },
+  {
+    "name": "valid flow with tools and an api step",
+    "flow": {
+      "schema_version": 1,
+      "flow_id": "demo",
+      "name": "Demo",
+      "persona": "You help callers.",
+      "guardrails": [
+        "Be polite."
+      ],
+      "greeting": "Hello",
+      "allow_end_call_anywhere": true,
+      "settings": {
+        "language": "hi",
+        "llm_model": "voice-fast",
+        "llm_temperature": 0,
+        "tts_voice_id": null
+      },
+      "start_node": "ask",
+      "nodes": {
+        "ask": {
+          "type": "agent",
+          "on_enter": "wait",
+          "instructions": "Ask what they need.",
+          "transitions": [
+            {
+              "to": "details",
+              "when": "They said what they need.",
+              "capture": {
+                "topic": {
+                  "type": "string",
+                  "description": "Topic",
+                  "enum": [
+                    "a",
+                    "b"
+                  ]
+                },
+                "count": {
+                  "type": "integer",
+                  "description": "How many",
+                  "required": false
+                }
+              }
+            }
+          ],
+          "tools": [
+            {
+              "tool": "bank.recent_transactions",
+              "inputs": {
+                "card_last4": "{{pin}}"
+              }
+            }
+          ]
+        },
+        "details": {
+          "type": "collect",
+          "instructions": "Collect details.",
+          "fields": [
+            {
+              "name": "full_name",
+              "builtin": "name",
+              "options": {
+                "last_name": true,
+                "verify_spelling": false
+              }
+            },
+            {
+              "name": "phone",
+              "builtin": "phone",
+              "instructions": "Caller is {{caller_number}}."
+            },
+            {
+              "name": "pin",
+              "builtin": "digits",
+              "options": {
+                "num_digits": 4,
+                "ask_for_confirmation": false
+              }
+            },
+            {
+              "name": "city",
+              "type": "string",
+              "description": "City",
+              "enum": [
+                "x",
+                "y"
+              ]
+            }
+          ],
+          "next": "check"
+        },
+        "done": {
+          "type": "end",
+          "instructions": "Minimum due {{minimum_due}} by {{due_date}}.",
+          "goodbye": "Bye."
+        },
+        "check": {
+          "type": "api",
+          "tool": "bank.get_card_balance",
+          "inputs": {
+            "card_last4": "{{pin}}",
+            "date_of_birth": "{{full_name}}"
+          },
+          "save": [
+            "minimum_due",
+            "due_date"
+          ],
+          "say": "One moment, {{full_name}}.",
+          "verifies": false,
+          "next": "done",
+          "on_error": "done"
+        }
+      },
+      "tools": [
+        {
+          "tool": "bank.search_faq"
+        }
+      ]
+    },
+    "problems": []
+  },
+  {
+    "name": "api step without on_error",
+    "flow": {
+      "schema_version": 1,
+      "flow_id": "demo",
+      "name": "Demo",
+      "persona": "You help callers.",
+      "guardrails": [
+        "Be polite."
+      ],
+      "greeting": "Hello",
+      "allow_end_call_anywhere": true,
+      "settings": {
+        "language": "hi",
+        "llm_model": "voice-fast",
+        "llm_temperature": 0,
+        "tts_voice_id": null
+      },
+      "start_node": "ask",
+      "nodes": {
+        "ask": {
+          "type": "agent",
+          "on_enter": "wait",
+          "instructions": "Ask what they need.",
+          "transitions": [
+            {
+              "to": "details",
+              "when": "They said what they need.",
+              "capture": {
+                "topic": {
+                  "type": "string",
+                  "description": "Topic",
+                  "enum": [
+                    "a",
+                    "b"
+                  ]
+                },
+                "count": {
+                  "type": "integer",
+                  "description": "How many",
+                  "required": false
+                }
+              }
+            }
+          ],
+          "tools": [
+            {
+              "tool": "bank.recent_transactions",
+              "inputs": {
+                "card_last4": "{{pin}}"
+              }
+            }
+          ]
+        },
+        "details": {
+          "type": "collect",
+          "instructions": "Collect details.",
+          "fields": [
+            {
+              "name": "full_name",
+              "builtin": "name",
+              "options": {
+                "last_name": true,
+                "verify_spelling": false
+              }
+            },
+            {
+              "name": "phone",
+              "builtin": "phone",
+              "instructions": "Caller is {{caller_number}}."
+            },
+            {
+              "name": "pin",
+              "builtin": "digits",
+              "options": {
+                "num_digits": 4,
+                "ask_for_confirmation": false
+              }
+            },
+            {
+              "name": "city",
+              "type": "string",
+              "description": "City",
+              "enum": [
+                "x",
+                "y"
+              ]
+            }
+          ],
+          "next": "check"
+        },
+        "done": {
+          "type": "end",
+          "instructions": "Minimum due {{minimum_due}} by {{due_date}}.",
+          "goodbye": "Bye."
+        },
+        "check": {
+          "type": "api",
+          "tool": "bank.get_card_balance",
+          "inputs": {
+            "card_last4": "{{pin}}",
+            "date_of_birth": "{{full_name}}"
+          },
+          "save": [
+            "minimum_due",
+            "due_date"
+          ],
+          "say": "One moment, {{full_name}}.",
+          "verifies": false,
+          "next": "done"
+        }
+      },
+      "tools": [
+        {
+          "tool": "bank.search_faq"
+        }
+      ]
+    },
+    "problems": [
+      "nodes.check.on_error: Field required"
+    ]
+  },
+  {
+    "name": "api step tool without integration",
+    "flow": {
+      "schema_version": 1,
+      "flow_id": "demo",
+      "name": "Demo",
+      "persona": "You help callers.",
+      "guardrails": [
+        "Be polite."
+      ],
+      "greeting": "Hello",
+      "allow_end_call_anywhere": true,
+      "settings": {
+        "language": "hi",
+        "llm_model": "voice-fast",
+        "llm_temperature": 0,
+        "tts_voice_id": null
+      },
+      "start_node": "ask",
+      "nodes": {
+        "ask": {
+          "type": "agent",
+          "on_enter": "wait",
+          "instructions": "Ask what they need.",
+          "transitions": [
+            {
+              "to": "details",
+              "when": "They said what they need.",
+              "capture": {
+                "topic": {
+                  "type": "string",
+                  "description": "Topic",
+                  "enum": [
+                    "a",
+                    "b"
+                  ]
+                },
+                "count": {
+                  "type": "integer",
+                  "description": "How many",
+                  "required": false
+                }
+              }
+            }
+          ],
+          "tools": [
+            {
+              "tool": "bank.recent_transactions",
+              "inputs": {
+                "card_last4": "{{pin}}"
+              }
+            }
+          ]
+        },
+        "details": {
+          "type": "collect",
+          "instructions": "Collect details.",
+          "fields": [
+            {
+              "name": "full_name",
+              "builtin": "name",
+              "options": {
+                "last_name": true,
+                "verify_spelling": false
+              }
+            },
+            {
+              "name": "phone",
+              "builtin": "phone",
+              "instructions": "Caller is {{caller_number}}."
+            },
+            {
+              "name": "pin",
+              "builtin": "digits",
+              "options": {
+                "num_digits": 4,
+                "ask_for_confirmation": false
+              }
+            },
+            {
+              "name": "city",
+              "type": "string",
+              "description": "City",
+              "enum": [
+                "x",
+                "y"
+              ]
+            }
+          ],
+          "next": "check"
+        },
+        "done": {
+          "type": "end",
+          "instructions": "Minimum due {{minimum_due}} by {{due_date}}.",
+          "goodbye": "Bye."
+        },
+        "check": {
+          "type": "api",
+          "tool": "get_card_balance",
+          "inputs": {
+            "card_last4": "{{pin}}",
+            "date_of_birth": "{{full_name}}"
+          },
+          "save": [
+            "minimum_due",
+            "due_date"
+          ],
+          "say": "One moment, {{full_name}}.",
+          "verifies": false,
+          "next": "done",
+          "on_error": "done"
+        }
+      },
+      "tools": [
+        {
+          "tool": "bank.search_faq"
+        }
+      ]
+    },
+    "problems": [
+      "nodes.check.tool: must be '<integration>.<tool>', e.g. 'demo_bank.get_card_balance'"
+    ]
+  },
+  {
+    "name": "api step tool with capitals and dash",
+    "flow": {
+      "schema_version": 1,
+      "flow_id": "demo",
+      "name": "Demo",
+      "persona": "You help callers.",
+      "guardrails": [
+        "Be polite."
+      ],
+      "greeting": "Hello",
+      "allow_end_call_anywhere": true,
+      "settings": {
+        "language": "hi",
+        "llm_model": "voice-fast",
+        "llm_temperature": 0,
+        "tts_voice_id": null
+      },
+      "start_node": "ask",
+      "nodes": {
+        "ask": {
+          "type": "agent",
+          "on_enter": "wait",
+          "instructions": "Ask what they need.",
+          "transitions": [
+            {
+              "to": "details",
+              "when": "They said what they need.",
+              "capture": {
+                "topic": {
+                  "type": "string",
+                  "description": "Topic",
+                  "enum": [
+                    "a",
+                    "b"
+                  ]
+                },
+                "count": {
+                  "type": "integer",
+                  "description": "How many",
+                  "required": false
+                }
+              }
+            }
+          ],
+          "tools": [
+            {
+              "tool": "bank.recent_transactions",
+              "inputs": {
+                "card_last4": "{{pin}}"
+              }
+            }
+          ]
+        },
+        "details": {
+          "type": "collect",
+          "instructions": "Collect details.",
+          "fields": [
+            {
+              "name": "full_name",
+              "builtin": "name",
+              "options": {
+                "last_name": true,
+                "verify_spelling": false
+              }
+            },
+            {
+              "name": "phone",
+              "builtin": "phone",
+              "instructions": "Caller is {{caller_number}}."
+            },
+            {
+              "name": "pin",
+              "builtin": "digits",
+              "options": {
+                "num_digits": 4,
+                "ask_for_confirmation": false
+              }
+            },
+            {
+              "name": "city",
+              "type": "string",
+              "description": "City",
+              "enum": [
+                "x",
+                "y"
+              ]
+            }
+          ],
+          "next": "check"
+        },
+        "done": {
+          "type": "end",
+          "instructions": "Minimum due {{minimum_due}} by {{due_date}}.",
+          "goodbye": "Bye."
+        },
+        "check": {
+          "type": "api",
+          "tool": "bank.Get-Balance",
+          "inputs": {
+            "card_last4": "{{pin}}",
+            "date_of_birth": "{{full_name}}"
+          },
+          "save": [
+            "minimum_due",
+            "due_date"
+          ],
+          "say": "One moment, {{full_name}}.",
+          "verifies": false,
+          "next": "done",
+          "on_error": "done"
+        }
+      },
+      "tools": [
+        {
+          "tool": "bank.search_faq"
+        }
+      ]
+    },
+    "problems": []
+  },
+  {
+    "name": "api step next is not a node",
+    "flow": {
+      "schema_version": 1,
+      "flow_id": "demo",
+      "name": "Demo",
+      "persona": "You help callers.",
+      "guardrails": [
+        "Be polite."
+      ],
+      "greeting": "Hello",
+      "allow_end_call_anywhere": true,
+      "settings": {
+        "language": "hi",
+        "llm_model": "voice-fast",
+        "llm_temperature": 0,
+        "tts_voice_id": null
+      },
+      "start_node": "ask",
+      "nodes": {
+        "ask": {
+          "type": "agent",
+          "on_enter": "wait",
+          "instructions": "Ask what they need.",
+          "transitions": [
+            {
+              "to": "details",
+              "when": "They said what they need.",
+              "capture": {
+                "topic": {
+                  "type": "string",
+                  "description": "Topic",
+                  "enum": [
+                    "a",
+                    "b"
+                  ]
+                },
+                "count": {
+                  "type": "integer",
+                  "description": "How many",
+                  "required": false
+                }
+              }
+            }
+          ],
+          "tools": [
+            {
+              "tool": "bank.recent_transactions",
+              "inputs": {
+                "card_last4": "{{pin}}"
+              }
+            }
+          ]
+        },
+        "details": {
+          "type": "collect",
+          "instructions": "Collect details.",
+          "fields": [
+            {
+              "name": "full_name",
+              "builtin": "name",
+              "options": {
+                "last_name": true,
+                "verify_spelling": false
+              }
+            },
+            {
+              "name": "phone",
+              "builtin": "phone",
+              "instructions": "Caller is {{caller_number}}."
+            },
+            {
+              "name": "pin",
+              "builtin": "digits",
+              "options": {
+                "num_digits": 4,
+                "ask_for_confirmation": false
+              }
+            },
+            {
+              "name": "city",
+              "type": "string",
+              "description": "City",
+              "enum": [
+                "x",
+                "y"
+              ]
+            }
+          ],
+          "next": "check"
+        },
+        "done": {
+          "type": "end",
+          "instructions": "Minimum due {{minimum_due}} by {{due_date}}.",
+          "goodbye": "Bye."
+        },
+        "check": {
+          "type": "api",
+          "tool": "bank.get_card_balance",
+          "inputs": {
+            "card_last4": "{{pin}}",
+            "date_of_birth": "{{full_name}}"
+          },
+          "save": [
+            "minimum_due",
+            "due_date"
+          ],
+          "say": "One moment, {{full_name}}.",
+          "verifies": false,
+          "next": "dnoe",
+          "on_error": "done"
+        }
+      },
+      "tools": [
+        {
+          "tool": "bank.search_faq"
+        }
+      ]
+    },
+    "problems": [
+      "nodes.check.next: 'dnoe' is not a node"
+    ]
+  },
+  {
+    "name": "api step on_error to itself",
+    "flow": {
+      "schema_version": 1,
+      "flow_id": "demo",
+      "name": "Demo",
+      "persona": "You help callers.",
+      "guardrails": [
+        "Be polite."
+      ],
+      "greeting": "Hello",
+      "allow_end_call_anywhere": true,
+      "settings": {
+        "language": "hi",
+        "llm_model": "voice-fast",
+        "llm_temperature": 0,
+        "tts_voice_id": null
+      },
+      "start_node": "ask",
+      "nodes": {
+        "ask": {
+          "type": "agent",
+          "on_enter": "wait",
+          "instructions": "Ask what they need.",
+          "transitions": [
+            {
+              "to": "details",
+              "when": "They said what they need.",
+              "capture": {
+                "topic": {
+                  "type": "string",
+                  "description": "Topic",
+                  "enum": [
+                    "a",
+                    "b"
+                  ]
+                },
+                "count": {
+                  "type": "integer",
+                  "description": "How many",
+                  "required": false
+                }
+              }
+            }
+          ],
+          "tools": [
+            {
+              "tool": "bank.recent_transactions",
+              "inputs": {
+                "card_last4": "{{pin}}"
+              }
+            }
+          ]
+        },
+        "details": {
+          "type": "collect",
+          "instructions": "Collect details.",
+          "fields": [
+            {
+              "name": "full_name",
+              "builtin": "name",
+              "options": {
+                "last_name": true,
+                "verify_spelling": false
+              }
+            },
+            {
+              "name": "phone",
+              "builtin": "phone",
+              "instructions": "Caller is {{caller_number}}."
+            },
+            {
+              "name": "pin",
+              "builtin": "digits",
+              "options": {
+                "num_digits": 4,
+                "ask_for_confirmation": false
+              }
+            },
+            {
+              "name": "city",
+              "type": "string",
+              "description": "City",
+              "enum": [
+                "x",
+                "y"
+              ]
+            }
+          ],
+          "next": "check"
+        },
+        "done": {
+          "type": "end",
+          "instructions": "Minimum due {{minimum_due}} by {{due_date}}.",
+          "goodbye": "Bye."
+        },
+        "check": {
+          "type": "api",
+          "tool": "bank.get_card_balance",
+          "inputs": {
+            "card_last4": "{{pin}}",
+            "date_of_birth": "{{full_name}}"
+          },
+          "save": [
+            "minimum_due",
+            "due_date"
+          ],
+          "say": "One moment, {{full_name}}.",
+          "verifies": false,
+          "next": "done",
+          "on_error": "check"
+        }
+      },
+      "tools": [
+        {
+          "tool": "bank.search_faq"
+        }
+      ]
+    },
+    "problems": [
+      "nodes.check.on_error: a node can't move to itself"
+    ]
+  },
+  {
+    "name": "api step with instructions",
+    "flow": {
+      "schema_version": 1,
+      "flow_id": "demo",
+      "name": "Demo",
+      "persona": "You help callers.",
+      "guardrails": [
+        "Be polite."
+      ],
+      "greeting": "Hello",
+      "allow_end_call_anywhere": true,
+      "settings": {
+        "language": "hi",
+        "llm_model": "voice-fast",
+        "llm_temperature": 0,
+        "tts_voice_id": null
+      },
+      "start_node": "ask",
+      "nodes": {
+        "ask": {
+          "type": "agent",
+          "on_enter": "wait",
+          "instructions": "Ask what they need.",
+          "transitions": [
+            {
+              "to": "details",
+              "when": "They said what they need.",
+              "capture": {
+                "topic": {
+                  "type": "string",
+                  "description": "Topic",
+                  "enum": [
+                    "a",
+                    "b"
+                  ]
+                },
+                "count": {
+                  "type": "integer",
+                  "description": "How many",
+                  "required": false
+                }
+              }
+            }
+          ],
+          "tools": [
+            {
+              "tool": "bank.recent_transactions",
+              "inputs": {
+                "card_last4": "{{pin}}"
+              }
+            }
+          ]
+        },
+        "details": {
+          "type": "collect",
+          "instructions": "Collect details.",
+          "fields": [
+            {
+              "name": "full_name",
+              "builtin": "name",
+              "options": {
+                "last_name": true,
+                "verify_spelling": false
+              }
+            },
+            {
+              "name": "phone",
+              "builtin": "phone",
+              "instructions": "Caller is {{caller_number}}."
+            },
+            {
+              "name": "pin",
+              "builtin": "digits",
+              "options": {
+                "num_digits": 4,
+                "ask_for_confirmation": false
+              }
+            },
+            {
+              "name": "city",
+              "type": "string",
+              "description": "City",
+              "enum": [
+                "x",
+                "y"
+              ]
+            }
+          ],
+          "next": "check"
+        },
+        "done": {
+          "type": "end",
+          "instructions": "Minimum due {{minimum_due}} by {{due_date}}.",
+          "goodbye": "Bye."
+        },
+        "check": {
+          "type": "api",
+          "tool": "bank.get_card_balance",
+          "inputs": {
+            "card_last4": "{{pin}}",
+            "date_of_birth": "{{full_name}}"
+          },
+          "save": [
+            "minimum_due",
+            "due_date"
+          ],
+          "say": "One moment, {{full_name}}.",
+          "verifies": false,
+          "next": "done",
+          "on_error": "done",
+          "instructions": "Do it."
+        }
+      },
+      "tools": [
+        {
+          "tool": "bank.search_faq"
+        }
+      ]
+    },
+    "problems": [
+      "nodes.check.instructions: unknown key (check the spelling)"
+    ]
+  },
+  {
+    "name": "api step bad save name",
+    "flow": {
+      "schema_version": 1,
+      "flow_id": "demo",
+      "name": "Demo",
+      "persona": "You help callers.",
+      "guardrails": [
+        "Be polite."
+      ],
+      "greeting": "Hello",
+      "allow_end_call_anywhere": true,
+      "settings": {
+        "language": "hi",
+        "llm_model": "voice-fast",
+        "llm_temperature": 0,
+        "tts_voice_id": null
+      },
+      "start_node": "ask",
+      "nodes": {
+        "ask": {
+          "type": "agent",
+          "on_enter": "wait",
+          "instructions": "Ask what they need.",
+          "transitions": [
+            {
+              "to": "details",
+              "when": "They said what they need.",
+              "capture": {
+                "topic": {
+                  "type": "string",
+                  "description": "Topic",
+                  "enum": [
+                    "a",
+                    "b"
+                  ]
+                },
+                "count": {
+                  "type": "integer",
+                  "description": "How many",
+                  "required": false
+                }
+              }
+            }
+          ],
+          "tools": [
+            {
+              "tool": "bank.recent_transactions",
+              "inputs": {
+                "card_last4": "{{pin}}"
+              }
+            }
+          ]
+        },
+        "details": {
+          "type": "collect",
+          "instructions": "Collect details.",
+          "fields": [
+            {
+              "name": "full_name",
+              "builtin": "name",
+              "options": {
+                "last_name": true,
+                "verify_spelling": false
+              }
+            },
+            {
+              "name": "phone",
+              "builtin": "phone",
+              "instructions": "Caller is {{caller_number}}."
+            },
+            {
+              "name": "pin",
+              "builtin": "digits",
+              "options": {
+                "num_digits": 4,
+                "ask_for_confirmation": false
+              }
+            },
+            {
+              "name": "city",
+              "type": "string",
+              "description": "City",
+              "enum": [
+                "x",
+                "y"
+              ]
+            }
+          ],
+          "next": "check"
+        },
+        "done": {
+          "type": "end",
+          "instructions": "Minimum due {{minimum_due}} by {{due_date}}.",
+          "goodbye": "Bye."
+        },
+        "check": {
+          "type": "api",
+          "tool": "bank.get_card_balance",
+          "inputs": {
+            "card_last4": "{{pin}}",
+            "date_of_birth": "{{full_name}}"
+          },
+          "save": [
+            "Minimum Due"
+          ],
+          "say": "One moment, {{full_name}}.",
+          "verifies": false,
+          "next": "done",
+          "on_error": "done"
+        }
+      },
+      "tools": [
+        {
+          "tool": "bank.search_faq"
+        }
+      ]
+    },
+    "problems": [
+      "nodes.check.save[0]: must be lower-case letters, digits and _ , starting with a letter (max 48 characters)",
+      "nodes.done.instructions: unknown variable {{minimum_due}}; built-ins are caller_number, dialed_number, now_ist, today_ist, plus any captured or collected field or saved API output",
+      "nodes.done.instructions: unknown variable {{due_date}}; built-ins are caller_number, dialed_number, now_ist, today_ist, plus any captured or collected field or saved API output"
+    ]
+  },
+  {
+    "name": "api step input is a number",
+    "flow": {
+      "schema_version": 1,
+      "flow_id": "demo",
+      "name": "Demo",
+      "persona": "You help callers.",
+      "guardrails": [
+        "Be polite."
+      ],
+      "greeting": "Hello",
+      "allow_end_call_anywhere": true,
+      "settings": {
+        "language": "hi",
+        "llm_model": "voice-fast",
+        "llm_temperature": 0,
+        "tts_voice_id": null
+      },
+      "start_node": "ask",
+      "nodes": {
+        "ask": {
+          "type": "agent",
+          "on_enter": "wait",
+          "instructions": "Ask what they need.",
+          "transitions": [
+            {
+              "to": "details",
+              "when": "They said what they need.",
+              "capture": {
+                "topic": {
+                  "type": "string",
+                  "description": "Topic",
+                  "enum": [
+                    "a",
+                    "b"
+                  ]
+                },
+                "count": {
+                  "type": "integer",
+                  "description": "How many",
+                  "required": false
+                }
+              }
+            }
+          ],
+          "tools": [
+            {
+              "tool": "bank.recent_transactions",
+              "inputs": {
+                "card_last4": "{{pin}}"
+              }
+            }
+          ]
+        },
+        "details": {
+          "type": "collect",
+          "instructions": "Collect details.",
+          "fields": [
+            {
+              "name": "full_name",
+              "builtin": "name",
+              "options": {
+                "last_name": true,
+                "verify_spelling": false
+              }
+            },
+            {
+              "name": "phone",
+              "builtin": "phone",
+              "instructions": "Caller is {{caller_number}}."
+            },
+            {
+              "name": "pin",
+              "builtin": "digits",
+              "options": {
+                "num_digits": 4,
+                "ask_for_confirmation": false
+              }
+            },
+            {
+              "name": "city",
+              "type": "string",
+              "description": "City",
+              "enum": [
+                "x",
+                "y"
+              ]
+            }
+          ],
+          "next": "check"
+        },
+        "done": {
+          "type": "end",
+          "instructions": "Minimum due {{minimum_due}} by {{due_date}}.",
+          "goodbye": "Bye."
+        },
+        "check": {
+          "type": "api",
+          "tool": "bank.get_card_balance",
+          "inputs": {
+            "card_last4": "{{pin}}",
+            "date_of_birth": "{{full_name}}",
+            "count": 5
+          },
+          "save": [
+            "minimum_due",
+            "due_date"
+          ],
+          "say": "One moment, {{full_name}}.",
+          "verifies": false,
+          "next": "done",
+          "on_error": "done"
+        }
+      },
+      "tools": [
+        {
+          "tool": "bank.search_faq"
+        }
+      ]
+    },
+    "problems": [
+      "nodes.check.inputs.count: Input should be a valid string"
+    ]
+  },
+  {
+    "name": "api step say unknown variable",
+    "flow": {
+      "schema_version": 1,
+      "flow_id": "demo",
+      "name": "Demo",
+      "persona": "You help callers.",
+      "guardrails": [
+        "Be polite."
+      ],
+      "greeting": "Hello",
+      "allow_end_call_anywhere": true,
+      "settings": {
+        "language": "hi",
+        "llm_model": "voice-fast",
+        "llm_temperature": 0,
+        "tts_voice_id": null
+      },
+      "start_node": "ask",
+      "nodes": {
+        "ask": {
+          "type": "agent",
+          "on_enter": "wait",
+          "instructions": "Ask what they need.",
+          "transitions": [
+            {
+              "to": "details",
+              "when": "They said what they need.",
+              "capture": {
+                "topic": {
+                  "type": "string",
+                  "description": "Topic",
+                  "enum": [
+                    "a",
+                    "b"
+                  ]
+                },
+                "count": {
+                  "type": "integer",
+                  "description": "How many",
+                  "required": false
+                }
+              }
+            }
+          ],
+          "tools": [
+            {
+              "tool": "bank.recent_transactions",
+              "inputs": {
+                "card_last4": "{{pin}}"
+              }
+            }
+          ]
+        },
+        "details": {
+          "type": "collect",
+          "instructions": "Collect details.",
+          "fields": [
+            {
+              "name": "full_name",
+              "builtin": "name",
+              "options": {
+                "last_name": true,
+                "verify_spelling": false
+              }
+            },
+            {
+              "name": "phone",
+              "builtin": "phone",
+              "instructions": "Caller is {{caller_number}}."
+            },
+            {
+              "name": "pin",
+              "builtin": "digits",
+              "options": {
+                "num_digits": 4,
+                "ask_for_confirmation": false
+              }
+            },
+            {
+              "name": "city",
+              "type": "string",
+              "description": "City",
+              "enum": [
+                "x",
+                "y"
+              ]
+            }
+          ],
+          "next": "check"
+        },
+        "done": {
+          "type": "end",
+          "instructions": "Minimum due {{minimum_due}} by {{due_date}}.",
+          "goodbye": "Bye."
+        },
+        "check": {
+          "type": "api",
+          "tool": "bank.get_card_balance",
+          "inputs": {
+            "card_last4": "{{pin}}",
+            "date_of_birth": "{{full_name}}"
+          },
+          "save": [
+            "minimum_due",
+            "due_date"
+          ],
+          "say": "Hold on {{who}}.",
+          "verifies": false,
+          "next": "done",
+          "on_error": "done"
+        }
+      },
+      "tools": [
+        {
+          "tool": "bank.search_faq"
+        }
+      ]
+    },
+    "problems": [
+      "nodes.check.say: unknown variable {{who}}; built-ins are caller_number, dialed_number, now_ist, today_ist, plus any captured or collected field or saved API output"
+    ]
+  },
+  {
+    "name": "api step verifies not a boolean",
+    "flow": {
+      "schema_version": 1,
+      "flow_id": "demo",
+      "name": "Demo",
+      "persona": "You help callers.",
+      "guardrails": [
+        "Be polite."
+      ],
+      "greeting": "Hello",
+      "allow_end_call_anywhere": true,
+      "settings": {
+        "language": "hi",
+        "llm_model": "voice-fast",
+        "llm_temperature": 0,
+        "tts_voice_id": null
+      },
+      "start_node": "ask",
+      "nodes": {
+        "ask": {
+          "type": "agent",
+          "on_enter": "wait",
+          "instructions": "Ask what they need.",
+          "transitions": [
+            {
+              "to": "details",
+              "when": "They said what they need.",
+              "capture": {
+                "topic": {
+                  "type": "string",
+                  "description": "Topic",
+                  "enum": [
+                    "a",
+                    "b"
+                  ]
+                },
+                "count": {
+                  "type": "integer",
+                  "description": "How many",
+                  "required": false
+                }
+              }
+            }
+          ],
+          "tools": [
+            {
+              "tool": "bank.recent_transactions",
+              "inputs": {
+                "card_last4": "{{pin}}"
+              }
+            }
+          ]
+        },
+        "details": {
+          "type": "collect",
+          "instructions": "Collect details.",
+          "fields": [
+            {
+              "name": "full_name",
+              "builtin": "name",
+              "options": {
+                "last_name": true,
+                "verify_spelling": false
+              }
+            },
+            {
+              "name": "phone",
+              "builtin": "phone",
+              "instructions": "Caller is {{caller_number}}."
+            },
+            {
+              "name": "pin",
+              "builtin": "digits",
+              "options": {
+                "num_digits": 4,
+                "ask_for_confirmation": false
+              }
+            },
+            {
+              "name": "city",
+              "type": "string",
+              "description": "City",
+              "enum": [
+                "x",
+                "y"
+              ]
+            }
+          ],
+          "next": "check"
+        },
+        "done": {
+          "type": "end",
+          "instructions": "Minimum due {{minimum_due}} by {{due_date}}.",
+          "goodbye": "Bye."
+        },
+        "check": {
+          "type": "api",
+          "tool": "bank.get_card_balance",
+          "inputs": {
+            "card_last4": "{{pin}}",
+            "date_of_birth": "{{full_name}}"
+          },
+          "save": [
+            "minimum_due",
+            "due_date"
+          ],
+          "say": "One moment, {{full_name}}.",
+          "verifies": "yes",
+          "next": "done",
+          "on_error": "done"
+        }
+      },
+      "tools": [
+        {
+          "tool": "bank.search_faq"
+        }
+      ]
+    },
+    "problems": [
+      "nodes.check.verifies: Input should be a valid boolean"
+    ]
+  },
+  {
+    "name": "api step without tool",
+    "flow": {
+      "schema_version": 1,
+      "flow_id": "demo",
+      "name": "Demo",
+      "persona": "You help callers.",
+      "guardrails": [
+        "Be polite."
+      ],
+      "greeting": "Hello",
+      "allow_end_call_anywhere": true,
+      "settings": {
+        "language": "hi",
+        "llm_model": "voice-fast",
+        "llm_temperature": 0,
+        "tts_voice_id": null
+      },
+      "start_node": "ask",
+      "nodes": {
+        "ask": {
+          "type": "agent",
+          "on_enter": "wait",
+          "instructions": "Ask what they need.",
+          "transitions": [
+            {
+              "to": "details",
+              "when": "They said what they need.",
+              "capture": {
+                "topic": {
+                  "type": "string",
+                  "description": "Topic",
+                  "enum": [
+                    "a",
+                    "b"
+                  ]
+                },
+                "count": {
+                  "type": "integer",
+                  "description": "How many",
+                  "required": false
+                }
+              }
+            }
+          ],
+          "tools": [
+            {
+              "tool": "bank.recent_transactions",
+              "inputs": {
+                "card_last4": "{{pin}}"
+              }
+            }
+          ]
+        },
+        "details": {
+          "type": "collect",
+          "instructions": "Collect details.",
+          "fields": [
+            {
+              "name": "full_name",
+              "builtin": "name",
+              "options": {
+                "last_name": true,
+                "verify_spelling": false
+              }
+            },
+            {
+              "name": "phone",
+              "builtin": "phone",
+              "instructions": "Caller is {{caller_number}}."
+            },
+            {
+              "name": "pin",
+              "builtin": "digits",
+              "options": {
+                "num_digits": 4,
+                "ask_for_confirmation": false
+              }
+            },
+            {
+              "name": "city",
+              "type": "string",
+              "description": "City",
+              "enum": [
+                "x",
+                "y"
+              ]
+            }
+          ],
+          "next": "check"
+        },
+        "done": {
+          "type": "end",
+          "instructions": "Minimum due {{minimum_due}} by {{due_date}}.",
+          "goodbye": "Bye."
+        },
+        "check": {
+          "type": "api",
+          "inputs": {
+            "card_last4": "{{pin}}",
+            "date_of_birth": "{{full_name}}"
+          },
+          "save": [
+            "minimum_due",
+            "due_date"
+          ],
+          "say": "One moment, {{full_name}}.",
+          "verifies": false,
+          "next": "done",
+          "on_error": "done"
+        }
+      },
+      "tools": [
+        {
+          "tool": "bank.search_faq"
+        }
+      ]
+    },
+    "problems": [
+      "nodes.check.tool: Field required"
+    ]
+  },
+  {
+    "name": "flow tools item is a string",
+    "flow": {
+      "schema_version": 1,
+      "flow_id": "demo",
+      "name": "Demo",
+      "persona": "You help callers.",
+      "guardrails": [
+        "Be polite."
+      ],
+      "greeting": "Hello",
+      "allow_end_call_anywhere": true,
+      "settings": {
+        "language": "hi",
+        "llm_model": "voice-fast",
+        "llm_temperature": 0,
+        "tts_voice_id": null
+      },
+      "start_node": "ask",
+      "nodes": {
+        "ask": {
+          "type": "agent",
+          "on_enter": "wait",
+          "instructions": "Ask what they need.",
+          "transitions": [
+            {
+              "to": "details",
+              "when": "They said what they need.",
+              "capture": {
+                "topic": {
+                  "type": "string",
+                  "description": "Topic",
+                  "enum": [
+                    "a",
+                    "b"
+                  ]
+                },
+                "count": {
+                  "type": "integer",
+                  "description": "How many",
+                  "required": false
+                }
+              }
+            }
+          ],
+          "tools": [
+            {
+              "tool": "bank.recent_transactions",
+              "inputs": {
+                "card_last4": "{{pin}}"
+              }
+            }
+          ]
+        },
+        "details": {
+          "type": "collect",
+          "instructions": "Collect details.",
+          "fields": [
+            {
+              "name": "full_name",
+              "builtin": "name",
+              "options": {
+                "last_name": true,
+                "verify_spelling": false
+              }
+            },
+            {
+              "name": "phone",
+              "builtin": "phone",
+              "instructions": "Caller is {{caller_number}}."
+            },
+            {
+              "name": "pin",
+              "builtin": "digits",
+              "options": {
+                "num_digits": 4,
+                "ask_for_confirmation": false
+              }
+            },
+            {
+              "name": "city",
+              "type": "string",
+              "description": "City",
+              "enum": [
+                "x",
+                "y"
+              ]
+            }
+          ],
+          "next": "check"
+        },
+        "done": {
+          "type": "end",
+          "instructions": "Minimum due {{minimum_due}} by {{due_date}}.",
+          "goodbye": "Bye."
+        },
+        "check": {
+          "type": "api",
+          "tool": "bank.get_card_balance",
+          "inputs": {
+            "card_last4": "{{pin}}",
+            "date_of_birth": "{{full_name}}"
+          },
+          "save": [
+            "minimum_due",
+            "due_date"
+          ],
+          "say": "One moment, {{full_name}}.",
+          "verifies": false,
+          "next": "done",
+          "on_error": "done"
+        }
+      },
+      "tools": [
+        "bank.search_faq"
+      ]
+    },
+    "problems": [
+      "tools[0]: Input should be a valid dictionary or instance of ToolUse"
+    ]
+  },
+  {
+    "name": "flow tools listed twice",
+    "flow": {
+      "schema_version": 1,
+      "flow_id": "demo",
+      "name": "Demo",
+      "persona": "You help callers.",
+      "guardrails": [
+        "Be polite."
+      ],
+      "greeting": "Hello",
+      "allow_end_call_anywhere": true,
+      "settings": {
+        "language": "hi",
+        "llm_model": "voice-fast",
+        "llm_temperature": 0,
+        "tts_voice_id": null
+      },
+      "start_node": "ask",
+      "nodes": {
+        "ask": {
+          "type": "agent",
+          "on_enter": "wait",
+          "instructions": "Ask what they need.",
+          "transitions": [
+            {
+              "to": "details",
+              "when": "They said what they need.",
+              "capture": {
+                "topic": {
+                  "type": "string",
+                  "description": "Topic",
+                  "enum": [
+                    "a",
+                    "b"
+                  ]
+                },
+                "count": {
+                  "type": "integer",
+                  "description": "How many",
+                  "required": false
+                }
+              }
+            }
+          ],
+          "tools": [
+            {
+              "tool": "bank.recent_transactions",
+              "inputs": {
+                "card_last4": "{{pin}}"
+              }
+            }
+          ]
+        },
+        "details": {
+          "type": "collect",
+          "instructions": "Collect details.",
+          "fields": [
+            {
+              "name": "full_name",
+              "builtin": "name",
+              "options": {
+                "last_name": true,
+                "verify_spelling": false
+              }
+            },
+            {
+              "name": "phone",
+              "builtin": "phone",
+              "instructions": "Caller is {{caller_number}}."
+            },
+            {
+              "name": "pin",
+              "builtin": "digits",
+              "options": {
+                "num_digits": 4,
+                "ask_for_confirmation": false
+              }
+            },
+            {
+              "name": "city",
+              "type": "string",
+              "description": "City",
+              "enum": [
+                "x",
+                "y"
+              ]
+            }
+          ],
+          "next": "check"
+        },
+        "done": {
+          "type": "end",
+          "instructions": "Minimum due {{minimum_due}} by {{due_date}}.",
+          "goodbye": "Bye."
+        },
+        "check": {
+          "type": "api",
+          "tool": "bank.get_card_balance",
+          "inputs": {
+            "card_last4": "{{pin}}",
+            "date_of_birth": "{{full_name}}"
+          },
+          "save": [
+            "minimum_due",
+            "due_date"
+          ],
+          "say": "One moment, {{full_name}}.",
+          "verifies": false,
+          "next": "done",
+          "on_error": "done"
+        }
+      },
+      "tools": [
+        {
+          "tool": "bank.search_faq"
+        },
+        {
+          "tool": "help.search_faq"
+        }
+      ]
+    },
+    "problems": [
+      "tools[1].tool: a tool called 'search_faq' is already in the list"
+    ]
+  },
+  {
+    "name": "step tool also on every step",
+    "flow": {
+      "schema_version": 1,
+      "flow_id": "demo",
+      "name": "Demo",
+      "persona": "You help callers.",
+      "guardrails": [
+        "Be polite."
+      ],
+      "greeting": "Hello",
+      "allow_end_call_anywhere": true,
+      "settings": {
+        "language": "hi",
+        "llm_model": "voice-fast",
+        "llm_temperature": 0,
+        "tts_voice_id": null
+      },
+      "start_node": "ask",
+      "nodes": {
+        "ask": {
+          "type": "agent",
+          "on_enter": "wait",
+          "instructions": "Ask what they need.",
+          "transitions": [
+            {
+              "to": "details",
+              "when": "They said what they need.",
+              "capture": {
+                "topic": {
+                  "type": "string",
+                  "description": "Topic",
+                  "enum": [
+                    "a",
+                    "b"
+                  ]
+                },
+                "count": {
+                  "type": "integer",
+                  "description": "How many",
+                  "required": false
+                }
+              }
+            }
+          ],
+          "tools": [
+            {
+              "tool": "bank.search_faq"
+            }
+          ]
+        },
+        "details": {
+          "type": "collect",
+          "instructions": "Collect details.",
+          "fields": [
+            {
+              "name": "full_name",
+              "builtin": "name",
+              "options": {
+                "last_name": true,
+                "verify_spelling": false
+              }
+            },
+            {
+              "name": "phone",
+              "builtin": "phone",
+              "instructions": "Caller is {{caller_number}}."
+            },
+            {
+              "name": "pin",
+              "builtin": "digits",
+              "options": {
+                "num_digits": 4,
+                "ask_for_confirmation": false
+              }
+            },
+            {
+              "name": "city",
+              "type": "string",
+              "description": "City",
+              "enum": [
+                "x",
+                "y"
+              ]
+            }
+          ],
+          "next": "check"
+        },
+        "done": {
+          "type": "end",
+          "instructions": "Minimum due {{minimum_due}} by {{due_date}}.",
+          "goodbye": "Bye."
+        },
+        "check": {
+          "type": "api",
+          "tool": "bank.get_card_balance",
+          "inputs": {
+            "card_last4": "{{pin}}",
+            "date_of_birth": "{{full_name}}"
+          },
+          "save": [
+            "minimum_due",
+            "due_date"
+          ],
+          "say": "One moment, {{full_name}}.",
+          "verifies": false,
+          "next": "done",
+          "on_error": "done"
+        }
+      },
+      "tools": [
+        {
+          "tool": "bank.search_faq"
+        }
+      ]
+    },
+    "problems": [
+      "nodes.ask.tools[0].tool: 'search_faq' is already on every step (the flow's tools); remove it here"
+    ]
+  },
+  {
+    "name": "step tool listed twice",
+    "flow": {
+      "schema_version": 1,
+      "flow_id": "demo",
+      "name": "Demo",
+      "persona": "You help callers.",
+      "guardrails": [
+        "Be polite."
+      ],
+      "greeting": "Hello",
+      "allow_end_call_anywhere": true,
+      "settings": {
+        "language": "hi",
+        "llm_model": "voice-fast",
+        "llm_temperature": 0,
+        "tts_voice_id": null
+      },
+      "start_node": "ask",
+      "nodes": {
+        "ask": {
+          "type": "agent",
+          "on_enter": "wait",
+          "instructions": "Ask what they need.",
+          "transitions": [
+            {
+              "to": "details",
+              "when": "They said what they need.",
+              "capture": {
+                "topic": {
+                  "type": "string",
+                  "description": "Topic",
+                  "enum": [
+                    "a",
+                    "b"
+                  ]
+                },
+                "count": {
+                  "type": "integer",
+                  "description": "How many",
+                  "required": false
+                }
+              }
+            }
+          ],
+          "tools": [
+            {
+              "tool": "bank.find_branch"
+            },
+            {
+              "tool": "other.find_branch"
+            }
+          ]
+        },
+        "details": {
+          "type": "collect",
+          "instructions": "Collect details.",
+          "fields": [
+            {
+              "name": "full_name",
+              "builtin": "name",
+              "options": {
+                "last_name": true,
+                "verify_spelling": false
+              }
+            },
+            {
+              "name": "phone",
+              "builtin": "phone",
+              "instructions": "Caller is {{caller_number}}."
+            },
+            {
+              "name": "pin",
+              "builtin": "digits",
+              "options": {
+                "num_digits": 4,
+                "ask_for_confirmation": false
+              }
+            },
+            {
+              "name": "city",
+              "type": "string",
+              "description": "City",
+              "enum": [
+                "x",
+                "y"
+              ]
+            }
+          ],
+          "next": "check"
+        },
+        "done": {
+          "type": "end",
+          "instructions": "Minimum due {{minimum_due}} by {{due_date}}.",
+          "goodbye": "Bye."
+        },
+        "check": {
+          "type": "api",
+          "tool": "bank.get_card_balance",
+          "inputs": {
+            "card_last4": "{{pin}}",
+            "date_of_birth": "{{full_name}}"
+          },
+          "save": [
+            "minimum_due",
+            "due_date"
+          ],
+          "say": "One moment, {{full_name}}.",
+          "verifies": false,
+          "next": "done",
+          "on_error": "done"
+        }
+      },
+      "tools": [
+        {
+          "tool": "bank.search_faq"
+        }
+      ]
+    },
+    "problems": [
+      "nodes.ask.tools[1].tool: a tool called 'find_branch' is already on this step"
+    ]
+  },
+  {
+    "name": "step tool named like a transition",
+    "flow": {
+      "schema_version": 1,
+      "flow_id": "demo",
+      "name": "Demo",
+      "persona": "You help callers.",
+      "guardrails": [
+        "Be polite."
+      ],
+      "greeting": "Hello",
+      "allow_end_call_anywhere": true,
+      "settings": {
+        "language": "hi",
+        "llm_model": "voice-fast",
+        "llm_temperature": 0,
+        "tts_voice_id": null
+      },
+      "start_node": "ask",
+      "nodes": {
+        "ask": {
+          "type": "agent",
+          "on_enter": "wait",
+          "instructions": "Ask what they need.",
+          "transitions": [
+            {
+              "to": "details",
+              "when": "They said what they need.",
+              "capture": {
+                "topic": {
+                  "type": "string",
+                  "description": "Topic",
+                  "enum": [
+                    "a",
+                    "b"
+                  ]
+                },
+                "count": {
+                  "type": "integer",
+                  "description": "How many",
+                  "required": false
+                }
+              }
+            }
+          ],
+          "tools": [
+            {
+              "tool": "bank.go_to_details"
+            }
+          ]
+        },
+        "details": {
+          "type": "collect",
+          "instructions": "Collect details.",
+          "fields": [
+            {
+              "name": "full_name",
+              "builtin": "name",
+              "options": {
+                "last_name": true,
+                "verify_spelling": false
+              }
+            },
+            {
+              "name": "phone",
+              "builtin": "phone",
+              "instructions": "Caller is {{caller_number}}."
+            },
+            {
+              "name": "pin",
+              "builtin": "digits",
+              "options": {
+                "num_digits": 4,
+                "ask_for_confirmation": false
+              }
+            },
+            {
+              "name": "city",
+              "type": "string",
+              "description": "City",
+              "enum": [
+                "x",
+                "y"
+              ]
+            }
+          ],
+          "next": "check"
+        },
+        "done": {
+          "type": "end",
+          "instructions": "Minimum due {{minimum_due}} by {{due_date}}.",
+          "goodbye": "Bye."
+        },
+        "check": {
+          "type": "api",
+          "tool": "bank.get_card_balance",
+          "inputs": {
+            "card_last4": "{{pin}}",
+            "date_of_birth": "{{full_name}}"
+          },
+          "save": [
+            "minimum_due",
+            "due_date"
+          ],
+          "say": "One moment, {{full_name}}.",
+          "verifies": false,
+          "next": "done",
+          "on_error": "done"
+        }
+      },
+      "tools": [
+        {
+          "tool": "bank.search_faq"
+        }
+      ]
+    },
+    "problems": [
+      "nodes.ask.tools[0].tool: a transition on this step is also called 'go_to_details'; rename the transition"
+    ]
+  },
+  {
+    "name": "transition named like a flow tool",
+    "flow": {
+      "schema_version": 1,
+      "flow_id": "demo",
+      "name": "Demo",
+      "persona": "You help callers.",
+      "guardrails": [
+        "Be polite."
+      ],
+      "greeting": "Hello",
+      "allow_end_call_anywhere": true,
+      "settings": {
+        "language": "hi",
+        "llm_model": "voice-fast",
+        "llm_temperature": 0,
+        "tts_voice_id": null
+      },
+      "start_node": "ask",
+      "nodes": {
+        "ask": {
+          "type": "agent",
+          "on_enter": "wait",
+          "instructions": "Ask what they need.",
+          "transitions": [
+            {
+              "to": "details",
+              "when": "They said what they need.",
+              "capture": {
+                "topic": {
+                  "type": "string",
+                  "description": "Topic",
+                  "enum": [
+                    "a",
+                    "b"
+                  ]
+                },
+                "count": {
+                  "type": "integer",
+                  "description": "How many",
+                  "required": false
+                }
+              },
+              "name": "search_faq"
+            }
+          ],
+          "tools": [
+            {
+              "tool": "bank.recent_transactions",
+              "inputs": {
+                "card_last4": "{{pin}}"
+              }
+            }
+          ]
+        },
+        "details": {
+          "type": "collect",
+          "instructions": "Collect details.",
+          "fields": [
+            {
+              "name": "full_name",
+              "builtin": "name",
+              "options": {
+                "last_name": true,
+                "verify_spelling": false
+              }
+            },
+            {
+              "name": "phone",
+              "builtin": "phone",
+              "instructions": "Caller is {{caller_number}}."
+            },
+            {
+              "name": "pin",
+              "builtin": "digits",
+              "options": {
+                "num_digits": 4,
+                "ask_for_confirmation": false
+              }
+            },
+            {
+              "name": "city",
+              "type": "string",
+              "description": "City",
+              "enum": [
+                "x",
+                "y"
+              ]
+            }
+          ],
+          "next": "check"
+        },
+        "done": {
+          "type": "end",
+          "instructions": "Minimum due {{minimum_due}} by {{due_date}}.",
+          "goodbye": "Bye."
+        },
+        "check": {
+          "type": "api",
+          "tool": "bank.get_card_balance",
+          "inputs": {
+            "card_last4": "{{pin}}",
+            "date_of_birth": "{{full_name}}"
+          },
+          "save": [
+            "minimum_due",
+            "due_date"
+          ],
+          "say": "One moment, {{full_name}}.",
+          "verifies": false,
+          "next": "done",
+          "on_error": "done"
+        }
+      },
+      "tools": [
+        {
+          "tool": "bank.search_faq"
+        }
+      ]
+    },
+    "problems": [
+      "nodes.ask.transitions[0]: 'search_faq' is also the name of a tool on every step; rename the transition"
+    ]
+  },
+  {
+    "name": "step tool unknown key",
+    "flow": {
+      "schema_version": 1,
+      "flow_id": "demo",
+      "name": "Demo",
+      "persona": "You help callers.",
+      "guardrails": [
+        "Be polite."
+      ],
+      "greeting": "Hello",
+      "allow_end_call_anywhere": true,
+      "settings": {
+        "language": "hi",
+        "llm_model": "voice-fast",
+        "llm_temperature": 0,
+        "tts_voice_id": null
+      },
+      "start_node": "ask",
+      "nodes": {
+        "ask": {
+          "type": "agent",
+          "on_enter": "wait",
+          "instructions": "Ask what they need.",
+          "transitions": [
+            {
+              "to": "details",
+              "when": "They said what they need.",
+              "capture": {
+                "topic": {
+                  "type": "string",
+                  "description": "Topic",
+                  "enum": [
+                    "a",
+                    "b"
+                  ]
+                },
+                "count": {
+                  "type": "integer",
+                  "description": "How many",
+                  "required": false
+                }
+              }
+            }
+          ],
+          "tools": [
+            {
+              "tool": "bank.recent_transactions",
+              "inputs": {
+                "card_last4": "{{pin}}"
+              },
+              "locked": true
+            }
+          ]
+        },
+        "details": {
+          "type": "collect",
+          "instructions": "Collect details.",
+          "fields": [
+            {
+              "name": "full_name",
+              "builtin": "name",
+              "options": {
+                "last_name": true,
+                "verify_spelling": false
+              }
+            },
+            {
+              "name": "phone",
+              "builtin": "phone",
+              "instructions": "Caller is {{caller_number}}."
+            },
+            {
+              "name": "pin",
+              "builtin": "digits",
+              "options": {
+                "num_digits": 4,
+                "ask_for_confirmation": false
+              }
+            },
+            {
+              "name": "city",
+              "type": "string",
+              "description": "City",
+              "enum": [
+                "x",
+                "y"
+              ]
+            }
+          ],
+          "next": "check"
+        },
+        "done": {
+          "type": "end",
+          "instructions": "Minimum due {{minimum_due}} by {{due_date}}.",
+          "goodbye": "Bye."
+        },
+        "check": {
+          "type": "api",
+          "tool": "bank.get_card_balance",
+          "inputs": {
+            "card_last4": "{{pin}}",
+            "date_of_birth": "{{full_name}}"
+          },
+          "save": [
+            "minimum_due",
+            "due_date"
+          ],
+          "say": "One moment, {{full_name}}.",
+          "verifies": false,
+          "next": "done",
+          "on_error": "done"
+        }
+      },
+      "tools": [
+        {
+          "tool": "bank.search_faq"
+        }
+      ]
+    },
+    "problems": [
+      "nodes.ask.tools[0].locked: unknown key (check the spelling)"
+    ]
+  },
+  {
+    "name": "tool input unknown variable",
+    "flow": {
+      "schema_version": 1,
+      "flow_id": "demo",
+      "name": "Demo",
+      "persona": "You help callers.",
+      "guardrails": [
+        "Be polite."
+      ],
+      "greeting": "Hello",
+      "allow_end_call_anywhere": true,
+      "settings": {
+        "language": "hi",
+        "llm_model": "voice-fast",
+        "llm_temperature": 0,
+        "tts_voice_id": null
+      },
+      "start_node": "ask",
+      "nodes": {
+        "ask": {
+          "type": "agent",
+          "on_enter": "wait",
+          "instructions": "Ask what they need.",
+          "transitions": [
+            {
+              "to": "details",
+              "when": "They said what they need.",
+              "capture": {
+                "topic": {
+                  "type": "string",
+                  "description": "Topic",
+                  "enum": [
+                    "a",
+                    "b"
+                  ]
+                },
+                "count": {
+                  "type": "integer",
+                  "description": "How many",
+                  "required": false
+                }
+              }
+            }
+          ],
+          "tools": [
+            {
+              "tool": "bank.recent_transactions",
+              "inputs": {
+                "card_last4": "{{pin}}"
+              }
+            }
+          ]
+        },
+        "details": {
+          "type": "collect",
+          "instructions": "Collect details.",
+          "fields": [
+            {
+              "name": "full_name",
+              "builtin": "name",
+              "options": {
+                "last_name": true,
+                "verify_spelling": false
+              }
+            },
+            {
+              "name": "phone",
+              "builtin": "phone",
+              "instructions": "Caller is {{caller_number}}."
+            },
+            {
+              "name": "pin",
+              "builtin": "digits",
+              "options": {
+                "num_digits": 4,
+                "ask_for_confirmation": false
+              }
+            },
+            {
+              "name": "city",
+              "type": "string",
+              "description": "City",
+              "enum": [
+                "x",
+                "y"
+              ]
+            }
+          ],
+          "next": "check"
+        },
+        "done": {
+          "type": "end",
+          "instructions": "Minimum due {{minimum_due}} by {{due_date}}.",
+          "goodbye": "Bye."
+        },
+        "check": {
+          "type": "api",
+          "tool": "bank.get_card_balance",
+          "inputs": {
+            "card_last4": "{{pin}}",
+            "date_of_birth": "{{full_name}}"
+          },
+          "save": [
+            "minimum_due",
+            "due_date"
+          ],
+          "say": "One moment, {{full_name}}.",
+          "verifies": false,
+          "next": "done",
+          "on_error": "done"
+        }
+      },
+      "tools": [
+        {
+          "tool": "bank.search_faq",
+          "inputs": {
+            "q": "{{question_text}}"
+          }
+        }
+      ]
+    },
+    "problems": [
+      "tools[0].inputs.q: unknown variable {{question_text}}; built-ins are caller_number, dialed_number, now_ist, today_ist, plus any captured or collected field or saved API output"
+    ]
+  },
+  {
+    "name": "save collides with a collected field",
+    "flow": {
+      "schema_version": 1,
+      "flow_id": "demo",
+      "name": "Demo",
+      "persona": "You help callers.",
+      "guardrails": [
+        "Be polite."
+      ],
+      "greeting": "Hello",
+      "allow_end_call_anywhere": true,
+      "settings": {
+        "language": "hi",
+        "llm_model": "voice-fast",
+        "llm_temperature": 0,
+        "tts_voice_id": null
+      },
+      "start_node": "ask",
+      "nodes": {
+        "ask": {
+          "type": "agent",
+          "on_enter": "wait",
+          "instructions": "Ask what they need.",
+          "transitions": [
+            {
+              "to": "details",
+              "when": "They said what they need.",
+              "capture": {
+                "topic": {
+                  "type": "string",
+                  "description": "Topic",
+                  "enum": [
+                    "a",
+                    "b"
+                  ]
+                },
+                "count": {
+                  "type": "integer",
+                  "description": "How many",
+                  "required": false
+                }
+              }
+            }
+          ],
+          "tools": [
+            {
+              "tool": "bank.recent_transactions",
+              "inputs": {
+                "card_last4": "{{pin}}"
+              }
+            }
+          ]
+        },
+        "details": {
+          "type": "collect",
+          "instructions": "Collect details.",
+          "fields": [
+            {
+              "name": "full_name",
+              "builtin": "name",
+              "options": {
+                "last_name": true,
+                "verify_spelling": false
+              }
+            },
+            {
+              "name": "phone",
+              "builtin": "phone",
+              "instructions": "Caller is {{caller_number}}."
+            },
+            {
+              "name": "pin",
+              "builtin": "digits",
+              "options": {
+                "num_digits": 4,
+                "ask_for_confirmation": false
+              }
+            },
+            {
+              "name": "city",
+              "type": "string",
+              "description": "City",
+              "enum": [
+                "x",
+                "y"
+              ]
+            }
+          ],
+          "next": "check"
+        },
+        "done": {
+          "type": "end",
+          "instructions": "Minimum due {{minimum_due}} by {{due_date}}.",
+          "goodbye": "Bye."
+        },
+        "check": {
+          "type": "api",
+          "tool": "bank.get_card_balance",
+          "inputs": {
+            "card_last4": "{{pin}}",
+            "date_of_birth": "{{full_name}}"
+          },
+          "save": [
+            "city"
+          ],
+          "say": "One moment, {{full_name}}.",
+          "verifies": false,
+          "next": "done",
+          "on_error": "done"
+        }
+      },
+      "tools": [
+        {
+          "tool": "bank.search_faq"
+        }
+      ]
+    },
+    "problems": [
+      "nodes.check.save[0]: 'city' is already defined at nodes.details.fields[3]; use a different name",
+      "nodes.done.instructions: unknown variable {{minimum_due}}; built-ins are caller_number, dialed_number, now_ist, today_ist, plus any captured or collected field or saved API output",
+      "nodes.done.instructions: unknown variable {{due_date}}; built-ins are caller_number, dialed_number, now_ist, today_ist, plus any captured or collected field or saved API output"
+    ]
+  },
+  {
+    "name": "save shadows a built-in",
+    "flow": {
+      "schema_version": 1,
+      "flow_id": "demo",
+      "name": "Demo",
+      "persona": "You help callers.",
+      "guardrails": [
+        "Be polite."
+      ],
+      "greeting": "Hello",
+      "allow_end_call_anywhere": true,
+      "settings": {
+        "language": "hi",
+        "llm_model": "voice-fast",
+        "llm_temperature": 0,
+        "tts_voice_id": null
+      },
+      "start_node": "ask",
+      "nodes": {
+        "ask": {
+          "type": "agent",
+          "on_enter": "wait",
+          "instructions": "Ask what they need.",
+          "transitions": [
+            {
+              "to": "details",
+              "when": "They said what they need.",
+              "capture": {
+                "topic": {
+                  "type": "string",
+                  "description": "Topic",
+                  "enum": [
+                    "a",
+                    "b"
+                  ]
+                },
+                "count": {
+                  "type": "integer",
+                  "description": "How many",
+                  "required": false
+                }
+              }
+            }
+          ],
+          "tools": [
+            {
+              "tool": "bank.recent_transactions",
+              "inputs": {
+                "card_last4": "{{pin}}"
+              }
+            }
+          ]
+        },
+        "details": {
+          "type": "collect",
+          "instructions": "Collect details.",
+          "fields": [
+            {
+              "name": "full_name",
+              "builtin": "name",
+              "options": {
+                "last_name": true,
+                "verify_spelling": false
+              }
+            },
+            {
+              "name": "phone",
+              "builtin": "phone",
+              "instructions": "Caller is {{caller_number}}."
+            },
+            {
+              "name": "pin",
+              "builtin": "digits",
+              "options": {
+                "num_digits": 4,
+                "ask_for_confirmation": false
+              }
+            },
+            {
+              "name": "city",
+              "type": "string",
+              "description": "City",
+              "enum": [
+                "x",
+                "y"
+              ]
+            }
+          ],
+          "next": "check"
+        },
+        "done": {
+          "type": "end",
+          "instructions": "Minimum due {{minimum_due}} by {{due_date}}.",
+          "goodbye": "Bye."
+        },
+        "check": {
+          "type": "api",
+          "tool": "bank.get_card_balance",
+          "inputs": {
+            "card_last4": "{{pin}}",
+            "date_of_birth": "{{full_name}}"
+          },
+          "save": [
+            "today_ist"
+          ],
+          "say": "One moment, {{full_name}}.",
+          "verifies": false,
+          "next": "done",
+          "on_error": "done"
+        }
+      },
+      "tools": [
+        {
+          "tool": "bank.search_faq"
+        }
+      ]
+    },
+    "problems": [
+      "nodes.check.save[0]: 'today_ist' is a built-in variable; choose another name",
+      "nodes.done.instructions: unknown variable {{minimum_due}}; built-ins are caller_number, dialed_number, now_ist, today_ist, plus any captured or collected field or saved API output",
+      "nodes.done.instructions: unknown variable {{due_date}}; built-ins are caller_number, dialed_number, now_ist, today_ist, plus any captured or collected field or saved API output"
+    ]
+  },
+  {
+    "name": "tools on a collect step",
+    "flow": {
+      "schema_version": 1,
+      "flow_id": "demo",
+      "name": "Demo",
+      "persona": "You help callers.",
+      "guardrails": [
+        "Be polite."
+      ],
+      "greeting": "Hello",
+      "allow_end_call_anywhere": true,
+      "settings": {
+        "language": "hi",
+        "llm_model": "voice-fast",
+        "llm_temperature": 0,
+        "tts_voice_id": null
+      },
+      "start_node": "ask",
+      "nodes": {
+        "ask": {
+          "type": "agent",
+          "on_enter": "wait",
+          "instructions": "Ask what they need.",
+          "transitions": [
+            {
+              "to": "details",
+              "when": "They said what they need.",
+              "capture": {
+                "topic": {
+                  "type": "string",
+                  "description": "Topic",
+                  "enum": [
+                    "a",
+                    "b"
+                  ]
+                },
+                "count": {
+                  "type": "integer",
+                  "description": "How many",
+                  "required": false
+                }
+              }
+            }
+          ],
+          "tools": [
+            {
+              "tool": "bank.recent_transactions",
+              "inputs": {
+                "card_last4": "{{pin}}"
+              }
+            }
+          ]
+        },
+        "details": {
+          "type": "collect",
+          "instructions": "Collect details.",
+          "fields": [
+            {
+              "name": "full_name",
+              "builtin": "name",
+              "options": {
+                "last_name": true,
+                "verify_spelling": false
+              }
+            },
+            {
+              "name": "phone",
+              "builtin": "phone",
+              "instructions": "Caller is {{caller_number}}."
+            },
+            {
+              "name": "pin",
+              "builtin": "digits",
+              "options": {
+                "num_digits": 4,
+                "ask_for_confirmation": false
+              }
+            },
+            {
+              "name": "city",
+              "type": "string",
+              "description": "City",
+              "enum": [
+                "x",
+                "y"
+              ]
+            }
+          ],
+          "next": "check",
+          "tools": [
+            {
+              "tool": "bank.search_faq"
+            }
+          ]
+        },
+        "done": {
+          "type": "end",
+          "instructions": "Minimum due {{minimum_due}} by {{due_date}}.",
+          "goodbye": "Bye."
+        },
+        "check": {
+          "type": "api",
+          "tool": "bank.get_card_balance",
+          "inputs": {
+            "card_last4": "{{pin}}",
+            "date_of_birth": "{{full_name}}"
+          },
+          "save": [
+            "minimum_due",
+            "due_date"
+          ],
+          "say": "One moment, {{full_name}}.",
+          "verifies": false,
+          "next": "done",
+          "on_error": "done"
+        }
+      },
+      "tools": [
+        {
+          "tool": "bank.search_faq"
+        }
+      ]
+    },
+    "problems": [
+      "nodes.details.tools: unknown key (check the spelling)"
+    ]
+  },
+  {
+    "name": "api step loops back so the end is unreachable",
+    "flow": {
+      "schema_version": 1,
+      "flow_id": "demo",
+      "name": "Demo",
+      "persona": "You help callers.",
+      "guardrails": [
+        "Be polite."
+      ],
+      "greeting": "Hello",
+      "allow_end_call_anywhere": true,
+      "settings": {
+        "language": "hi",
+        "llm_model": "voice-fast",
+        "llm_temperature": 0,
+        "tts_voice_id": null
+      },
+      "start_node": "ask",
+      "nodes": {
+        "ask": {
+          "type": "agent",
+          "on_enter": "wait",
+          "instructions": "Ask what they need.",
+          "transitions": [
+            {
+              "to": "details",
+              "when": "They said what they need.",
+              "capture": {
+                "topic": {
+                  "type": "string",
+                  "description": "Topic",
+                  "enum": [
+                    "a",
+                    "b"
+                  ]
+                },
+                "count": {
+                  "type": "integer",
+                  "description": "How many",
+                  "required": false
+                }
+              }
+            }
+          ],
+          "tools": [
+            {
+              "tool": "bank.recent_transactions",
+              "inputs": {
+                "card_last4": "{{pin}}"
+              }
+            }
+          ]
+        },
+        "details": {
+          "type": "collect",
+          "instructions": "Collect details.",
+          "fields": [
+            {
+              "name": "full_name",
+              "builtin": "name",
+              "options": {
+                "last_name": true,
+                "verify_spelling": false
+              }
+            },
+            {
+              "name": "phone",
+              "builtin": "phone",
+              "instructions": "Caller is {{caller_number}}."
+            },
+            {
+              "name": "pin",
+              "builtin": "digits",
+              "options": {
+                "num_digits": 4,
+                "ask_for_confirmation": false
+              }
+            },
+            {
+              "name": "city",
+              "type": "string",
+              "description": "City",
+              "enum": [
+                "x",
+                "y"
+              ]
+            }
+          ],
+          "next": "check"
+        },
+        "done": {
+          "type": "end",
+          "instructions": "Minimum due {{minimum_due}} by {{due_date}}.",
+          "goodbye": "Bye."
+        },
+        "check": {
+          "type": "api",
+          "tool": "bank.get_card_balance",
+          "inputs": {
+            "card_last4": "{{pin}}",
+            "date_of_birth": "{{full_name}}"
+          },
+          "save": [
+            "minimum_due",
+            "due_date"
+          ],
+          "say": "One moment, {{full_name}}.",
+          "verifies": false,
+          "next": "ask",
+          "on_error": "ask"
+        }
+      },
+      "tools": [
+        {
+          "tool": "bank.search_faq"
+        }
+      ]
+    },
+    "problems": [
+      "nodes.done: can't be reached from start_node 'ask'",
+      "nodes.ask: no path from here leads to an 'end' node",
+      "nodes.check: no path from here leads to an 'end' node",
+      "nodes.details: no path from here leads to an 'end' node"
+    ]
+  },
+  {
+    "name": "api shape plus link plus variable",
+    "flow": {
+      "schema_version": 1,
+      "flow_id": "demo",
+      "name": "Demo",
+      "persona": "You help callers.",
+      "guardrails": [
+        "Be polite."
+      ],
+      "greeting": "Hello",
+      "allow_end_call_anywhere": true,
+      "settings": {
+        "language": "hi",
+        "llm_model": "voice-fast",
+        "llm_temperature": 0,
+        "tts_voice_id": null
+      },
+      "start_node": "ask",
+      "nodes": {
+        "ask": {
+          "type": "agent",
+          "on_enter": "wait",
+          "instructions": "Ask what they need.",
+          "transitions": [
+            {
+              "to": "details",
+              "when": "They said what they need.",
+              "capture": {
+                "topic": {
+                  "type": "string",
+                  "description": "Topic",
+                  "enum": [
+                    "a",
+                    "b"
+                  ]
+                },
+                "count": {
+                  "type": "integer",
+                  "description": "How many",
+                  "required": false
+                }
+              }
+            }
+          ],
+          "tools": [
+            {
+              "tool": "bank.recent_transactions",
+              "inputs": {
+                "card_last4": "{{pin}}"
+              }
+            }
+          ]
+        },
+        "details": {
+          "type": "collect",
+          "instructions": "Collect details.",
+          "fields": [
+            {
+              "name": "full_name",
+              "builtin": "name",
+              "options": {
+                "last_name": true,
+                "verify_spelling": false
+              }
+            },
+            {
+              "name": "phone",
+              "builtin": "phone",
+              "instructions": "Caller is {{caller_number}}."
+            },
+            {
+              "name": "pin",
+              "builtin": "digits",
+              "options": {
+                "num_digits": 4,
+                "ask_for_confirmation": false
+              }
+            },
+            {
+              "name": "city",
+              "type": "string",
+              "description": "City",
+              "enum": [
+                "x",
+                "y"
+              ]
+            }
+          ],
+          "next": "check"
+        },
+        "done": {
+          "type": "end",
+          "instructions": "Minimum due {{minimum_due}} by {{due_date}}.",
+          "goodbye": "Bye."
+        },
+        "check": {
+          "type": "api",
+          "tool": "bank.get_card_balance",
+          "inputs": {
+            "card_last4": "{{pin}}",
+            "date_of_birth": "{{full_name}}"
+          },
+          "save": [
+            "minimum_due",
+            "due_date"
+          ],
+          "say": "Wait {{nobody}}.",
+          "verifies": false,
+          "next": "done",
+          "on_error": "nowhere",
+          "sya": "typo"
+        }
+      },
+      "tools": [
+        {
+          "tool": "bank.search_faq"
+        }
+      ]
+    },
+    "problems": [
+      "nodes.check.sya: unknown key (check the spelling)",
+      "nodes.check.on_error: 'nowhere' is not a node",
+      "nodes.check.say: unknown variable {{nobody}}; built-ins are caller_number, dialed_number, now_ist, today_ist, plus any captured or collected field or saved API output"
     ]
   },
   {

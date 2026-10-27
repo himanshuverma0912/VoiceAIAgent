@@ -1,0 +1,186 @@
+{
+  "schema_version": 1,
+  "flow_id": "credit_card_helpline",
+  "name": "Credit card helpline (demo bank)",
+  "persona": "You are Meera from Demo Bank's credit card helpline. You are calm, warm and brief: reply in one or two short sentences, because callers are often worried or on the move. Reply in the language the caller is using (Hindi, English or a mix) and switch when they do.\nSay amounts in rupees, rounded to the rupee, and dates as day and month (for example 5 November).",
+  "guardrails": [
+    "Never ask for or repeat the full card number, CVV, PIN, OTP or passwords; if the caller starts reading one out, stop them politely.",
+    "Only use amounts, dates and payments that a tool gave you; never guess or invent them.",
+    "Never promise a refund, a waiver, a reversal or a limit increase.",
+    "Only talk about the caller's own Demo Bank credit card; for anything else, say this line is only for credit cards."
+  ],
+  "greeting": "Namaste, this is Meera from Demo Bank's credit card helpline. How can I help you?",
+  "allow_end_call_anywhere": true,
+  "settings": {
+    "language": "multi",
+    "llm_temperature": 0
+  },
+  "tools": [
+    {
+      "tool": "demo_bank.search_faq"
+    }
+  ],
+  "start_node": "triage",
+  "nodes": {
+    "triage": {
+      "type": "agent",
+      "on_enter": "wait",
+      "instructions": "Find out what the caller needs. General questions about fees, interest, the minimum due, EMI, payments or blocking a card need no verification: answer them with search_faq, in simple words.\nAnything about their own card (balance, due date, payments, a charge they don't recognise) needs verification first.",
+      "transitions": [
+        {
+          "to": "verify_details",
+          "when": "The caller wants help with their own card: balance, due date, recent payments or a payment they don't recognise."
+        },
+        {
+          "to": "goodbye",
+          "when": "The caller has nothing more to ask."
+        }
+      ]
+    },
+    "verify_details": {
+      "type": "collect",
+      "instructions": "Explain in one sentence that you need two details to protect their account.",
+      "fields": [
+        {
+          "name": "date_of_birth",
+          "builtin": "date_of_birth"
+        },
+        {
+          "name": "card_last4",
+          "builtin": "digits",
+          "instructions": "Ask for the last 4 digits of their credit card. They can say them or type them on the keypad.",
+          "options": {
+            "num_digits": 4
+          }
+        }
+      ],
+      "next": "verify"
+    },
+    "verify": {
+      "type": "api",
+      "tool": "demo_bank.verify_customer",
+      "inputs": {
+        "card_last4": "{{card_last4}}",
+        "date_of_birth": "{{date_of_birth}}"
+      },
+      "save": [
+        "first_name"
+      ],
+      "say": "One moment while I check those details.",
+      "verifies": true,
+      "next": "account_help",
+      "on_error": "not_verified"
+    },
+    "not_verified": {
+      "type": "agent",
+      "instructions": "Tell the caller, kindly, that those details didn't match our records. Offer to try again, or help with a general question instead.",
+      "transitions": [
+        {
+          "to": "verify_details",
+          "when": "The caller wants to try the details again."
+        },
+        {
+          "to": "triage",
+          "when": "The caller wants help with a general question instead."
+        },
+        {
+          "to": "goodbye",
+          "when": "The caller doesn't want to continue."
+        }
+      ]
+    },
+    "account_help": {
+      "type": "agent",
+      "instructions": "The caller is verified. Thank {{first_name}} and help with their card.\n- Balance, minimum due, due date, late fee, available credit: use get_card_balance. If it's overdue, say so gently and suggest paying at least the minimum due today.\n- Recent spending or a particular payment: use recent_transactions and read at most three payments, newest first.\n- A payment they don't recognise: find it with recent_transactions if you can, confirm the merchant, then move on to raise the dispute.",
+      "tools": [
+        {
+          "tool": "demo_bank.get_card_balance",
+          "inputs": {
+            "card_last4": "{{card_last4}}",
+            "date_of_birth": "{{date_of_birth}}"
+          }
+        },
+        {
+          "tool": "demo_bank.recent_transactions",
+          "inputs": {
+            "card_last4": "{{card_last4}}",
+            "date_of_birth": "{{date_of_birth}}"
+          }
+        }
+      ],
+      "transitions": [
+        {
+          "to": "dispute",
+          "when": "The caller doesn't recognise a payment and wants it disputed, and you know which merchant it is.",
+          "capture": {
+            "merchant": {
+              "description": "The merchant name as on the statement"
+            },
+            "amount": {
+              "description": "The amount, if known",
+              "required": false
+            },
+            "payment_date": {
+              "description": "The date of the payment, if known",
+              "required": false
+            }
+          }
+        },
+        {
+          "to": "goodbye",
+          "when": "The caller has nothing more to ask."
+        }
+      ]
+    },
+    "dispute": {
+      "type": "api",
+      "tool": "demo_bank.raise_dispute",
+      "inputs": {
+        "card_last4": "{{card_last4}}",
+        "date_of_birth": "{{date_of_birth}}",
+        "merchant": "{{merchant}}",
+        "amount": "{{amount}}",
+        "date": "{{payment_date}}"
+      },
+      "save": [
+        "reference",
+        "callback_within"
+      ],
+      "say": "I'm raising that dispute now.",
+      "next": "dispute_raised",
+      "on_error": "dispute_failed"
+    },
+    "dispute_raised": {
+      "type": "agent",
+      "instructions": "Tell the caller the dispute for {{merchant}} is raised, give the reference {{reference}} slowly, and say the disputes team will call back within {{callback_within}}. Don't promise the money back. Remind them never to share an OTP. Ask if there is anything else.",
+      "transitions": [
+        {
+          "to": "account_help",
+          "when": "The caller has another question about their card."
+        },
+        {
+          "to": "goodbye",
+          "when": "The caller has nothing more to ask."
+        }
+      ]
+    },
+    "dispute_failed": {
+      "type": "agent",
+      "instructions": "Apologise: the dispute couldn't be raised right now. Say a team member will call back within one working day to raise it. Ask if there is anything else.",
+      "transitions": [
+        {
+          "to": "account_help",
+          "when": "The caller has another question about their card."
+        },
+        {
+          "to": "goodbye",
+          "when": "The caller has nothing more to ask."
+        }
+      ]
+    },
+    "goodbye": {
+      "type": "end",
+      "instructions": "Thank the caller, remind them never to share an OTP with anyone, and say goodbye."
+    }
+  }
+}

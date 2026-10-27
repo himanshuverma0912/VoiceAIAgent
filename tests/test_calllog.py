@@ -156,8 +156,20 @@ def test_nothing_personal_is_recorded():
     assert r["call_id"] == ""  # not a job id → not sent at all
     assert set(r) == {
         "call_id", "flow_id", "flow_version", "flow_source", "channel", "runtime",
-        "started_at", "duration_ms", "outcome", "steps", "turns", "latency_ms", "usage",
+        "started_at", "duration_ms", "outcome", "steps", "tools", "turns", "latency_ms", "usage",
     }
+
+
+def test_tools_are_recorded_by_name_only():
+    from flow_engine.tools import ToolUseRecord
+
+    rec = recorder(Clock())
+    rec.tool_used(ToolUseRecord("demo_bank.get_card_balance", True, 231))
+    rec.tool_used(ToolUseRecord("demo_bank.raise_dispute", False, 5000))
+    assert rec.record()["tools"] == [
+        {"tool": "demo_bank.get_card_balance", "ok": True, "ms": 231},
+        {"tool": "demo_bank.raise_dispute", "ok": False, "ms": 5000},
+    ]
 
 
 def test_no_latency_without_answers():

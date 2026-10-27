@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import type { OfferedTool } from "../api";
 import {
   BUILTINS,
   IDENTIFIER_HINT,
@@ -9,6 +10,7 @@ import {
   toolName,
   uniqueId,
   type AgentNode,
+  type ApiNode,
   type CaptureField,
   type CollectField,
   type CollectNode,
@@ -18,6 +20,7 @@ import {
   type Transition,
   type ValueType,
 } from "../spec";
+import { ToolInputs, ToolLabel, ToolSelect, ToolUses } from "./Tools";
 import { Check, Field, ListInput, VarText } from "./ui";
 
 type Vars = { name: string; about: string }[];
@@ -30,6 +33,8 @@ interface Props {
   problems: string[];
   vars: Vars;
   focusTransition?: number;
+  /** The integration tools this flow's workspace may use (null while loading). */
+  tools: OfferedTool[] | null;
   /** Change this node (the callback gets a copy to modify). */
   change: (fn: (node: FlowNode) => unknown) => void;
   rename: (newId: string) => void;
@@ -73,6 +78,7 @@ export function NodeEditor(p: Props) {
 
       {p.node.type === "agent" && <AgentForm {...p} node={p.node} otherIds={otherIds} />}
       {p.node.type === "collect" && <CollectForm {...p} node={p.node} otherIds={otherIds} />}
+      {p.node.type === "api" && <ApiForm {...p} node={p.node} otherIds={otherIds} />}
       {p.node.type === "end" && <EndForm {...p} node={p.node} />}
     </div>
   );
@@ -146,6 +152,21 @@ function AgentForm(p: Props & { node: AgentNode; otherIds: string[] }) {
           <option value="wait">The agent waits for the caller</option>
         </select>
       </Field>
+
+      <div className="section">
+        <h3 style={{ marginBottom: 6 }}>Tools on this step ({p.node.tools?.length ?? 0})</h3>
+        <p className="hint" style={{ marginTop: 0 }}>
+          Lookups the agent may do here when the caller needs them, like the balance. Inputs set here are filled from variables
+          and the AI can't change them.
+        </p>
+        <ToolUses
+          uses={p.node.tools ?? []}
+          offered={p.tools}
+          vars={p.vars}
+          editable={ed}
+          change={(uses) => p.change((n) => (uses.length ? ((n as AgentNode).tools = uses) : delete (n as AgentNode).tools))}
+        />
+      </div>
 
       <div className="section">
         <div className="row" style={{ marginBottom: 8 }}>
@@ -284,6 +305,89 @@ function KeyInput(props: { value: string; taken: string[]; editable: boolean; on
       onBlur={() => (ok && v !== props.value ? props.onCommit(v) : setV(props.value))}
       onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()}
     />
+  );
+}
+
+// ── API call ──────────────────────────────────────────────────────────────────
+
+function ApiForm(p: Props & { node: ApiNode; otherIds: string[] }) {
+  const ed = p.editable;
+  const offered = p.tools ?? [];
+  const t = offered.find((x) => x.ref === p.node.tool);
+  const save = p.node.save ?? [];
+  const set = (fn: (n: ApiNode) => void) => p.change((n) => fn(n as ApiNode));
+  return (
+    <>
+      <p className="hint" style={{ marginTop: -4 }}>
+        Calls the tool by itself (the AI doesn't decide), then goes on. Use it for lookups that must always happen, like
+        checking who the caller is.
+      </p>
+      <Field label="Tool">
+        <ToolSelect
+          value={p.node.tool}
+          offered={offered}
+          disabled={!ed}
+          onChange={(ref) =>
+            set((n) => {
+              n.tool = ref;
+              n.save = [];
+              const next = offered.find((x) => x.ref === ref);
+              n.inputs = Object.fromEntries((next?.tool.inputs ?? []).filter((i) => i.required).map((i) => [i.name, `{{${i.name}}}`]));
+            })
+          }
+        />
+      </Field>
+      {t && (
+        <div style={{ marginTop: -6, marginBottom: 12 }}>
+          <ToolLabel t={t} />
+          <p className="hint">{t.tool.description}</p>
+        </div>
+      )}
+      <div className="section">
+        <h3 style={{ marginBottom: 8 }}>Inputs</h3>
+        <ToolInputs use={p.node} offered={t} vars={p.vars} editable={ed} allInputs change={(inputs) => set((n) => (n.inputs = inputs))} />
+      </div>
+      <div className="section">
+        <h3 style={{ marginBottom: 6 }}>Keep from the answer</h3>
+        {!t || t.tool.outputs.length === 0 ? (
+          <p className="hint">{t ? "This tool returns nothing to keep." : "Choose a tool first."}</p>
+        ) : (
+          <div className="row wrap" style={{ gap: "4px 14px" }}>
+            {t.tool.outputs.map((o) => (
+              <Check
+                key={o}
+                label={`{{${o}}}`}
+                checked={save.includes(o)}
+                disabled={!ed}
+                onChange={(v) => set((n) => (n.save = v ? [...save, o] : save.filter((x) => x !== o)))}
+              />
+            ))}
+          </div>
+        )}
+        <p className="hint">Kept values become variables for the next steps; the agent also sees them.</p>
+      </div>
+      <div className="section">
+        <Field label="Say while it runs (optional)" hint="Covers the wait, e.g. “One moment while I check.”">
+          <VarText single value={p.node.say ?? ""} vars={p.vars} disabled={!ed} onChange={(v) => set((n) => (v ? (n.say = v) : delete n.say))} />
+        </Field>
+        <Check
+          label="This step verifies the caller"
+          checked={!!p.node.verifies}
+          disabled={!ed}
+          onChange={(v) => set((n) => (v ? (n.verifies = true) : delete n.verifies))}
+        />
+        <p className="hint" style={{ marginTop: -4 }}>
+          Tools that need a verified caller can only be used after this step works. The bank's tool must fail when the details
+          don't match.
+        </p>
+        <Field label={p.node.verifies ? "When the caller is verified, go to" : "When it works, go to"}>
+          <NodeSelect value={p.node.next} options={p.otherIds} disabled={!ed} onChange={(v) => set((n) => (n.next = v))} />
+        </Field>
+        <Field label={p.node.verifies ? "When the details don't match (or it fails), go to" : "If it fails, go to"}>
+          <NodeSelect value={p.node.on_error} options={p.otherIds} disabled={!ed} onChange={(v) => set((n) => (n.on_error = v))} />
+        </Field>
+      </div>
+    </>
   );
 }
 

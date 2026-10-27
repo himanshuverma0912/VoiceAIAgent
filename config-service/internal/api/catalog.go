@@ -88,7 +88,7 @@ func hasLanguage(langs []string, language string) bool {
 	return false
 }
 
-// checkFlow is checkSpec plus the model catalog, for a flow of the given workspace.
+// checkFlow is checkSpec plus the model catalog and the integrations, for a flow of the given workspace.
 func (s *Server) checkFlow(ctx context.Context, body []byte, flowID, workspace string) (any, []string, error) {
 	decoded, problems, err := checkSpec(body, flowID)
 	if err != nil {
@@ -98,7 +98,15 @@ func (s *Server) checkFlow(ctx context.Context, body []byte, flowID, workspace s
 	if err != nil {
 		return nil, nil, err
 	}
-	return decoded, append(problems, catalogProblems(entries, decoded, workspace)...), nil
+	problems = append(problems, catalogProblems(entries, decoded, workspace)...)
+	if f := flowspec.Parse(decoded); f != nil {
+		list, err := s.Store.ListIntegrations(ctx)
+		if err != nil {
+			return nil, nil, err
+		}
+		problems = append(problems, integrationProblems(list, f, workspace)...)
+	}
+	return decoded, problems, nil
 }
 
 // GET /v1/catalog — what Flow Studio offers. People see the entries offered to

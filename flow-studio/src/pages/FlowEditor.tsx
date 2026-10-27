@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ApiError, api, can, type CatalogEntry, type FlowSummary, type Me } from "../api";
+import { ApiError, api, can, offeredTools, type CatalogEntry, type FlowSummary, type Integration, type Me } from "../api";
 import { Canvas, type Selection } from "../components/Canvas";
 import { NodeEditor } from "../components/NodeEditor";
 import { ReviewDialog, SubmitDialog, VersionsDialog } from "../components/Review";
@@ -26,7 +26,7 @@ import {
   type NodeType,
 } from "../spec";
 
-const NEW_ID: Record<NodeType, string> = { agent: "step", collect: "collect_details", end: "end_call" };
+const NEW_ID: Record<NodeType, string> = { agent: "step", collect: "collect_details", api: "api_call", end: "end_call" };
 
 export function FlowEditor({ me, flowId }: { me: Me; flowId: string }) {
   const [summary, setSummary] = useState<FlowSummary | null>(null);
@@ -47,9 +47,11 @@ export function FlowEditor({ me, flowId }: { me: Me; flowId: string }) {
   const [testing, setTesting] = useState(false);
   const [activeNode, setActiveNode] = useState<string | null>(null);
   const [catalog, setCatalog] = useState<CatalogEntry[] | null>(null);
+  const [integrations, setIntegrations] = useState<Integration[] | null>(null);
 
   useEffect(() => {
     api.catalog().then(setCatalog, () => setCatalog([]));
+    api.integrations().then(setIntegrations, () => setIntegrations([]));
   }, []);
 
   // ── load ──
@@ -186,6 +188,18 @@ export function FlowEditor({ me, flowId }: { me: Me; flowId: string }) {
         if (n.type === "collect") n.next = to;
       });
       setSelection({ kind: "node", id: from });
+    } else if (node.type === "api") {
+      // The first link is "when it works"; the next one "if it fails".
+      const failure = !!node.next && node.next !== to;
+      edit((f) => {
+        const n = f.nodes[from];
+        if (n.type === "api") {
+          if (failure) n.on_error = to;
+          else n.next = to;
+        }
+      });
+      setSelection({ kind: "node", id: from });
+      toast(failure ? "Set where to go if the call fails." : "Set where to go when the call works.");
     }
   };
 
@@ -282,6 +296,10 @@ export function FlowEditor({ me, flowId }: { me: Me; flowId: string }) {
   const grouped = useMemo(() => groupProblems(problems, flow ? Object.keys(flow.nodes) : []), [problems, flow]);
   const vars = useMemo(() => (flow ? variablesOf(flow) : []), [flow]);
   const selectedNode = selection.kind === "node" && flow?.nodes[selection.id] ? selection : null;
+  const tools = useMemo(
+    () => (integrations === null || !summary ? null : offeredTools(integrations, summary.workspace)),
+    [integrations, summary],
+  );
 
   if (loadError)
     return (
@@ -489,6 +507,7 @@ export function FlowEditor({ me, flowId }: { me: Me; flowId: string }) {
               editable={editable}
               problems={grouped.byNode[selectedNode.id] ?? []}
               vars={vars}
+              tools={tools}
               change={changeNode(selectedNode.id)}
               rename={(newId) => rename(selectedNode.id, newId)}
               remove={() => remove(selectedNode.id)}
@@ -499,6 +518,7 @@ export function FlowEditor({ me, flowId }: { me: Me; flowId: string }) {
               flow={flow}
               workspace={summary.workspace}
               catalog={catalog}
+              tools={tools}
               editable={editable}
               problems={grouped.general}
               vars={vars}

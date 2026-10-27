@@ -15,12 +15,15 @@ import (
 const (
 	identifierMessage = "must be lower-case letters, digits and _ , starting with a letter (max 48 characters)"
 	languageMessage   = "must be a language code like 'hi', 'en', 'hi-IN', or 'multi'"
+	toolMessage       = "must be '<integration>.<tool>', e.g. 'demo_bank.get_card_balance'"
 	defaultGoodbye    = "Thank the caller briefly, in the language they are speaking, and say goodbye."
 )
 
 var (
 	identifierRE = regexp.MustCompile(`^[a-z][a-z0-9_]{0,47}$`)
 	languageRE   = regexp.MustCompile(`^[a-z]{2}(-[A-Za-z]{2})?$|^multi$`)
+	// ToolRE matches "<integration>.<tool>"; MCP tool names may use capitals and "-".
+	ToolRE       = regexp.MustCompile(`^[a-z][a-z0-9_]{0,31}\.[A-Za-z0-9_-]{1,64}$`)
 	valueTypes   = []string{"string", "number", "integer", "boolean"}
 	simpleFields = map[string]bool{"phone": true, "email": true, "address": true, "date_of_birth": true}
 )
@@ -36,19 +39,52 @@ type Flow struct {
 	Guardrails           []string
 	Greeting             string
 	AllowEndCallAnywhere bool
+	Tools                []ToolUse // offered on every agent step
 	StartNode            string
 	Nodes                []*Node // in file order
 }
 
-// Node is one step of a flow: type "agent", "collect" or "end".
+// Node is one step of a flow: type "agent", "collect", "api" or "end".
 type Node struct {
 	ID           string
 	Type         string
 	Instructions string
 	Transitions  []Transition // agent
+	Tools        []ToolUse    // agent
 	Fields       []Field      // collect
-	Next         string       // collect
+	Next         string       // collect, api
 	Goodbye      string       // end
+	// api
+	Tool     string
+	Inputs   []Input
+	Save     []string
+	Say      string
+	Verifies bool
+	OnError  string
+}
+
+// ToolUse is a tool of an integration offered to the LLM, with the inputs the
+// flow sets itself (hidden from the LLM).
+type ToolUse struct {
+	Tool   string // "<integration>.<tool>"
+	Inputs []Input
+}
+
+// Name is the tool's name as the LLM sees it (the part after the dot).
+func (t ToolUse) Name() string { return ToolName(t.Tool) }
+
+// ToolName returns the part of "<integration>.<tool>" after the dot.
+func ToolName(ref string) string {
+	if _, name, ok := strings.Cut(ref, "."); ok {
+		return name
+	}
+	return ref
+}
+
+// Input is one input value set by the flow (text that may hold {{variables}}).
+type Input struct {
+	Name  string
+	Value string
 }
 
 // Transition moves an agent node on to another node.
@@ -312,7 +348,7 @@ func pyStr(v any) string {
 func (s *shape) flow(v any) *Flow {
 	o, ok := s.model("", v, "Flow",
 		"schema_version", "flow_id", "name", "persona", "guardrails", "greeting",
-		"allow_end_call_anywhere", "settings", "start_node", "nodes")
+		"allow_end_call_anywhere", "settings", "tools", "start_node", "nodes")
 	if !ok {
 		return nil
 	}
@@ -345,6 +381,9 @@ func (s *shape) flow(v any) *Flow {
 	}
 	if v, ok := s.field("", o, "settings", false); ok {
 		s.settings(v)
+	}
+	if v, ok := o.Get("tools"); ok {
+		f.Tools = s.toolUses("tools", v)
 	}
 	if v, ok := s.field("", o, "start_node", true); ok {
 		f.StartNode, _ = s.identifier("start_node", v)
@@ -395,7 +434,7 @@ func (s *shape) node(loc, id string, v any) *Node {
 	switch typ {
 	case "agent":
 		n.Type = "agent"
-		s.extraKeys(loc, o, "type", "instructions", "transitions", "on_enter")
+		s.extraKeys(loc, o, "type", "instructions", "transitions", "on_enter", "tools")
 		if v, ok := s.field(loc, o, "instructions", true); ok {
 			n.Instructions, _ = s.str(at(loc, "instructions"), v, true)
 		}
@@ -410,6 +449,9 @@ func (s *shape) node(loc, id string, v any) *Node {
 		}
 		if v, ok := o.Get("on_enter"); ok {
 			s.literal(at(loc, "on_enter"), v, "speak", "wait")
+		}
+		if v, ok := o.Get("tools"); ok {
+			n.Tools = s.toolUses(at(loc, "tools"), v)
 		}
 	case "collect":
 		n.Type = "collect"
@@ -429,6 +471,36 @@ func (s *shape) node(loc, id string, v any) *Node {
 		if v, ok := s.field(loc, o, "next", true); ok {
 			n.Next, _ = s.identifier(at(loc, "next"), v)
 		}
+	case "api":
+		n.Type = "api"
+		s.extraKeys(loc, o, "type", "tool", "inputs", "save", "say", "verifies", "next", "on_error")
+		if v, ok := s.field(loc, o, "tool", true); ok {
+			n.Tool, _ = s.toolRef(at(loc, "tool"), v)
+		}
+		if v, ok := o.Get("inputs"); ok {
+			n.Inputs = s.inputs(at(loc, "inputs"), v)
+		}
+		if v, ok := o.Get("save"); ok {
+			if items, ok := s.list(at(loc, "save"), v, false); ok {
+				for i, item := range items {
+					if name, ok := s.identifier(idx(at(loc, "save"), i), item); ok {
+						n.Save = append(n.Save, name)
+					}
+				}
+			}
+		}
+		if v, ok := o.Get("say"); ok {
+			n.Say, _ = s.str(at(loc, "say"), v, false)
+		}
+		if v, ok := o.Get("verifies"); ok {
+			n.Verifies, _ = s.boolean(at(loc, "verifies"), v)
+		}
+		if v, ok := s.field(loc, o, "next", true); ok {
+			n.Next, _ = s.identifier(at(loc, "next"), v)
+		}
+		if v, ok := s.field(loc, o, "on_error", true); ok {
+			n.OnError, _ = s.identifier(at(loc, "on_error"), v)
+		}
 	case "end":
 		n.Type = "end"
 		s.extraKeys(loc, o, "type", "instructions", "goodbye")
@@ -440,10 +512,62 @@ func (s *shape) node(loc, id string, v any) *Node {
 			n.Goodbye, _ = s.str(at(loc, "goodbye"), v, false)
 		}
 	default:
-		s.add(loc, fmt.Sprintf("unknown node type '%s'; use 'agent', 'collect' or 'end'", pyStr(typ)))
+		s.add(loc, fmt.Sprintf("unknown node type '%s'; use 'agent', 'collect', 'api' or 'end'", pyStr(typ)))
 		return nil
 	}
 	return n
+}
+
+func (s *shape) toolRef(loc string, v any) (string, bool) {
+	str, ok := s.str(loc, v, false)
+	if !ok {
+		return "", false
+	}
+	if !ToolRE.MatchString(str) {
+		s.add(loc, toolMessage)
+		return "", false
+	}
+	return str, true
+}
+
+// inputs checks an object of input name -> text.
+func (s *shape) inputs(loc string, v any) []Input {
+	o, ok := v.(*Object)
+	if !ok {
+		s.add(loc, "Input should be a valid dictionary")
+		return nil
+	}
+	var out []Input
+	for _, k := range o.Keys {
+		if str, ok := s.str(at(loc, k), o.Values[k], false); ok {
+			out = append(out, Input{Name: k, Value: str})
+		}
+	}
+	return out
+}
+
+func (s *shape) toolUses(loc string, v any) []ToolUse {
+	items, ok := s.list(loc, v, false)
+	if !ok {
+		return nil
+	}
+	var out []ToolUse
+	for i, item := range items {
+		iloc := idx(loc, i)
+		o, ok := s.model(iloc, item, "ToolUse", "tool", "inputs")
+		if !ok {
+			continue
+		}
+		var t ToolUse
+		if v, ok := s.field(iloc, o, "tool", true); ok {
+			t.Tool, _ = s.toolRef(at(iloc, "tool"), v)
+		}
+		if v, ok := o.Get("inputs"); ok {
+			t.Inputs = s.inputs(at(iloc, "inputs"), v)
+		}
+		out = append(out, t)
+	}
+	return out
 }
 
 func (s *shape) transition(loc string, v any) (Transition, bool) {

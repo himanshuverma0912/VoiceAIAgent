@@ -93,6 +93,9 @@ All `/v1` routes need `Authorization: Bearer <token>`. Through Caddy they're at
 | `PUT /v1/flows/{flow_id}/workspace` | platform-admin | `{"workspace": "emi"}`: move the flow to another workspace |
 | `POST /v1/builds` | maker | AI flow builder: `{"workspace", "flow_id", "name", "description"}` (40 to 400,000 characters). Answers 202 with a `build_id`; the build runs in the background |
 | `GET /v1/builds/{build_id}` | whoever started it | `running` (with progress), `done` (the flow, notes for the business team, any problems left) or `failed`. Kept for an hour, in memory only |
+| `GET /v1/integrations` | signed in | The integrations offered to your workspaces and their tools (admins: all, with URLs and credential settings) |
+| `PUT /v1/integrations/{integration_id}` | platform-admin | Add or change one: `{"kind": "mcp" or "http", "label", "notes", "url", "test_url", "auth_header", "auth_env", "timeout_ms", "workspaces", "enabled", "tools": [...]}` (see Integrations) |
+| `DELETE /v1/integrations/{integration_id}` | platform-admin | Remove one nothing uses (409 lists the flows that still do) |
 | `GET /v1/numbers`, `PUT`/`DELETE /v1/numbers/{number}` | platform-admin | Number → flow mapping (`{"flow_id": "...", "version_pin": null}`) |
 | `GET /v1/audit?limit=100` | platform-admin | Who changed what |
 | `PUT /v1/flows/{flow_id}/layout` | maker | Where Flow Studio draws the nodes (not part of the flow) |
@@ -102,8 +105,8 @@ All `/v1` routes need `Authorization: Bearer <token>`. Through Caddy they're at
 | `GET /v1/catalog` | signed in | The models flows may use (LLMs, speech-to-text models, voices); admins also see switched-off ones |
 | `PUT /v1/catalog/{kind}/{model_id}` | platform-admin | Add or change one: kind `llm` (LiteLLM alias), `stt` (Deepgram model) or `tts_voice` (Cartesia voice id); `{"label", "notes", "languages": [], "workspaces": [], "enabled": true}` |
 | `DELETE /v1/catalog/{kind}/{model_id}` | platform-admin | Remove one nothing uses (409 lists the flows that still do) |
-| `GET /internal/v1/resolve?number=...` | RUNTIME_TOKEN | For the agent: the flow a number runs now; ETag / 304 |
-| `GET /internal/v1/flows/{flow_id}/draft` | RUNTIME_TOKEN | For the agent in a test call: the saved draft (422 if it has problems) |
+| `GET /internal/v1/resolve?number=...` | RUNTIME_TOKEN | For the agent: the flow a number runs now, with the integrations it uses; ETag / 304 |
+| `GET /internal/v1/flows/{flow_id}/draft` | RUNTIME_TOKEN | For the agent in a test call: the saved draft (422 if it has problems), with its integrations at their test URLs |
 | `POST /internal/v1/calls` | RUNTIME_TOKEN | For the agent when a call ends: its call-history record (sending it again is a no-op) |
 
 `?team=` still works wherever `?workspace=` does, for older scripts.
@@ -112,6 +115,53 @@ Saving a draft with `If-Match: "<checksum>"` (from GET draft) fails with 409 if 
 else saved in between; `If-None-Match: *` creates a new flow only if the id is free.
 
 Numbers are stored in E.164 (`+918045678901`); `91 80 4567 8901` and similar are accepted.
+
+## Integrations
+
+Flows can look things up and act in the bank's systems during a call, through
+**integrations**: an MCP server (streamable HTTP) or a REST API (JSON).
+Platform admins register each one with its tools (Flow Studio → Integrations,
+or `scripts/add-integration.sh infra/integrations/<id>.json`). A flow uses a
+tool as `"<integration>.<tool>"` in three ways:
+
+| Where | Who decides to call it | Use it for |
+|---|---|---|
+| `"tools"` at the top of the flow | the AI, on every conversation step | answers any caller may need: help-centre search, branches |
+| `"tools"` on an agent step | the AI, on that step | lookups the caller may ask for there: balance, recent payments |
+| an `"api"` step | nobody: it always runs, then goes to `next` (or `on_error`) | what must always happen: verifying the caller, raising a dispute |
+
+Each tool has a description (the AI reads it), inputs, outputs (what an API
+step may keep as `{{variables}}`) and rules:
+
+- **sensitive** (needs a verified caller): only on steps that can't be reached
+  without passing an API step with `"verifies": true` (which goes to `next`
+  only when the bank's tool confirms the details), and never on every step.
+  The voice agent refuses them again during the call if the caller isn't verified.
+- **locked** inputs (e.g. `card_last4`, `date_of_birth`): the flow must set them
+  under `inputs` from collected values; they're hidden from the AI, so a caller
+  can't talk the agent into looking up someone else's card.
+- **max_calls**: how often one call may use the tool (no guessing in a loop).
+
+A draft breaking these rules has problems, so it can't be test-called or
+submitted. Only integrations switched on and offered to the flow's workspace can
+be used; switching one off stops its tools on every call at once (the agent gets
+the integrations with the flow, and the resolve ETag changes).
+
+**No secrets in the database.** `auth_env` names a variable in the voice agent's
+`.env` that holds the header value (e.g. `INTEGRATION_CORE_BANKING_TOKEN=Bearer …`);
+only `INTEGRATION_…` variables are accepted, so an entry can never send the
+agent's own keys elsewhere. REST tools that need a verified caller must use POST,
+so card digits and dates of birth never appear in URLs. **Test calls** from Flow
+Studio use the integration's `test_url` (a sandbox) when it has one.
+
+**Nothing about the call is stored.** Tool inputs and answers stay in the call's
+memory; logs and call history record only which tool ran, whether it worked and
+how long it took (Flow Studio shows this under Calls → Tools).
+
+`infra/demo-bank/` is a demo core-banking server with made-up customers (MCP at
+`/mcp`, REST at `/api/<tool>`), started by `infra/docker-compose.yml`;
+`infra/integrations/demo_bank.json` registers it and
+`flows/credit-card-helpline.json` is a flow that uses it.
 
 ## AI flow builder
 
@@ -122,6 +172,9 @@ format and an example flow (`internal/builder/`), to the LLM behind the
 LiteLLM alias `FLOW_BUILDER_MODEL` (default `flow-builder`, a stronger model
 than the voice agent's), checks the answer with the same validator as
 drafts, and sends any problems back for the model to fix (up to 3 attempts).
+The builder is told which integration tools the workspace may use, and uses
+them (API steps for verification, tools on steps) following the rules above; when
+a brief needs a system that isn't connected, it says so in its notes.
 The result is only a draft: a maker reviews it in the editor, test-calls it and
 submits it like any other change. The description isn't stored: builds live in
 memory for an hour (at most one running per person, three at once). Set

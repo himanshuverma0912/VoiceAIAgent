@@ -234,6 +234,39 @@ function Report({ summary, calls }: { summary: CallSummary; calls: Call[] }) {
         </div>
       </section>
 
+      {summary.tools && summary.tools.length > 0 && (
+        <section className="card calls-section">
+          <h2>Tools</h2>
+          <p className="muted small-text">The bank systems calls looked things up in: how often, how many failed, and how long they took.</p>
+          <div className="table-wrap">
+            <table className="data">
+              <thead>
+                <tr>
+                  <th>Tool</th>
+                  <th className="num">Used</th>
+                  <th className="num">Failed</th>
+                  <th className="num">Typical</th>
+                  <th className="num">Slow (p95)</th>
+                </tr>
+              </thead>
+              <tbody>
+                {summary.tools.map((t) => (
+                  <tr key={t.tool}>
+                    <td>
+                      <code>{t.tool}</code>
+                    </td>
+                    <td className="num">{t.uses}</td>
+                    <td className="num">{t.failed > 0 ? <span className="chip bad">{t.failed}</span> : <span className="muted">0</span>}</td>
+                    <td className="num">{seconds(t.avg_ms)}</td>
+                    <td className="num">{seconds(t.p95_ms)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
+
       <section className="card calls-section">
         <h2>Versions</h2>
         <p className="muted small-text">Compare a new version with the one before it.</p>

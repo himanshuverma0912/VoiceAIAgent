@@ -141,6 +141,60 @@ export function offeredTo(e: CatalogEntry, workspace: string): boolean {
 
 // ── Call history (counts and timings only; no call content) ──
 
+// ── Integrations: bank APIs and MCP servers flows may call ──
+
+export interface ToolInputDef {
+  name: string;
+  type: "string" | "number" | "integer" | "boolean";
+  description: string;
+  required: boolean;
+  enum?: string[];
+}
+
+export interface IntegrationTool {
+  name: string;
+  description: string;
+  inputs: ToolInputDef[];
+  outputs: string[];
+  sensitive: boolean; // needs a verified caller
+  locked: string[]; // inputs the flow must set (never the AI)
+  max_calls: number;
+  method?: string; // REST only (admins)
+  path?: string;
+}
+
+export interface Integration {
+  integration_id: string;
+  kind: "mcp" | "http";
+  label: string;
+  notes: string;
+  url?: string; // admins only
+  test_url?: string;
+  auth_header?: string;
+  auth_env?: string;
+  timeout_ms?: number;
+  workspaces: string[];
+  enabled: boolean;
+  tools: IntegrationTool[];
+  updated_at: string;
+  updated_by: string;
+}
+
+export type IntegrationInput = Omit<Integration, "integration_id" | "updated_at" | "updated_by">;
+
+/** A tool a flow of this workspace may use, as "<integration>.<tool>". */
+export interface OfferedTool {
+  ref: string;
+  integration: Integration;
+  tool: IntegrationTool;
+}
+
+export function offeredTools(list: Integration[] | null, workspace: string): OfferedTool[] {
+  return (list ?? [])
+    .filter((i) => i.enabled && (i.workspaces.length === 0 || i.workspaces.includes(workspace)))
+    .flatMap((i) => i.tools.map((t) => ({ ref: `${i.integration_id}.${t.name}`, integration: i, tool: t })));
+}
+
 export type Outcome = "completed" | "ended_early" | "caller_hung_up" | "time_limit" | "error" | "other";
 export type Channel = "phone" | "studio_test" | "all";
 
@@ -162,6 +216,7 @@ export interface Call {
   duration_ms: number;
   outcome: Outcome;
   steps: { node: string; ms: number }[];
+  tools?: { tool: string; ok: boolean; ms: number }[];
   turns: { caller: number; agent: number };
   latency_ms: { p50: number; p95: number; count: number } | null;
   usage: CallUsage;
@@ -182,6 +237,7 @@ export interface CallSummary {
   duration_ms: Stats | null;
   latency_ms: Stats | null;
   steps: { node: string; reached: number; avg_ms: number; ended_here: number; hung_up_here: number }[];
+  tools?: { tool: string; uses: number; failed: number; avg_ms: number; p95_ms: number }[];
   versions: {
     version: number | null;
     source: string;
@@ -249,6 +305,10 @@ export const api = {
       specText,
     ),
   catalog: () => call<{ entries: CatalogEntry[] }>("GET", "/v1/catalog").then((r) => r.entries),
+  integrations: () => call<{ integrations: Integration[] }>("GET", "/v1/integrations").then((r) => r.integrations),
+  putIntegration: (id: string, input: IntegrationInput) =>
+    call<{ integration: Integration; created: boolean; used_by: string[] }>("PUT", `/v1/integrations/${id}`, JSON.stringify(input)),
+  deleteIntegration: (id: string) => call<void>("DELETE", `/v1/integrations/${id}`),
   putCatalog: (kind: CatalogKind, id: string, input: CatalogInput) =>
     call<{ created: boolean; used_by: string[] }>("PUT", `/v1/catalog/${kind}/${encodeURIComponent(id)}`, JSON.stringify(input)),
   deleteCatalog: (kind: CatalogKind, id: string) => call<void>("DELETE", `/v1/catalog/${kind}/${encodeURIComponent(id)}`),

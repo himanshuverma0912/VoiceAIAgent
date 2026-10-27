@@ -56,6 +56,54 @@ type Request struct {
 	FlowID      string
 	Name        string
 	Description string
+	Tools       []Tool // the integration tools this flow's workspace may use
+}
+
+// Tool is one integration tool, as the builder describes it to the model.
+type Tool struct {
+	Ref         string // "<integration>.<tool>"
+	Description string
+	Inputs      []ToolInput
+	Outputs     []string
+	Sensitive   bool // needs a verified caller
+}
+
+type ToolInput struct {
+	Name, Type, Description string
+	Required, Locked        bool
+}
+
+// toolsSection lists the tools for the prompt.
+func toolsSection(tools []Tool) string {
+	if len(tools) == 0 {
+		return "Tools you may use: none (no integrations are offered to this team yet)."
+	}
+	var b strings.Builder
+	b.WriteString("Tools you may use (the bank's integrations offered to this team):")
+	for _, t := range tools {
+		fmt.Fprintf(&b, "\n- %s: %s", t.Ref, t.Description)
+		if t.Sensitive {
+			b.WriteString(" [needs a verified caller]")
+		}
+		if len(t.Inputs) > 0 {
+			parts := make([]string, len(t.Inputs))
+			for i, in := range t.Inputs {
+				p := fmt.Sprintf("%s (%s", in.Name, in.Type)
+				if in.Required {
+					p += ", required"
+				}
+				if in.Locked {
+					p += ", set by the flow"
+				}
+				parts[i] = p + "): " + in.Description
+			}
+			b.WriteString("\n  Inputs: " + strings.Join(parts, "; "))
+		}
+		if len(t.Outputs) > 0 {
+			b.WriteString("\n  Returns: " + strings.Join(t.Outputs, ", "))
+		}
+	}
+	return b.String()
 }
 
 type Result struct {
@@ -71,12 +119,12 @@ type Result struct {
 // Build writes a flow for req. check validates a flow (returns its problems);
 // progress is told what's happening, for the UI.
 func (b *Builder) Build(ctx context.Context, req Request, check func([]byte) []string, progress func(string)) (*Result, error) {
-	system := strings.Replace(systemPrompt, "%EXAMPLE%", exampleFlow, 1)
+	system := strings.NewReplacer("%EXAMPLE%", exampleFlow, "%TOOLS_EXAMPLE%", exampleToolsFlow).Replace(systemPrompt)
 	messages := []message{
 		{Role: "system", Content: system},
 		{Role: "user", Content: fmt.Sprintf(
-			"Flow id: %s\nName: %s\n\nThe team's description of the call, between the markers:\n<<<DESCRIPTION\n%s\nDESCRIPTION>>>",
-			req.FlowID, req.Name, req.Description)},
+			"Flow id: %s\nName: %s\n\n%s\n\nThe team's description of the call, between the markers:\n<<<DESCRIPTION\n%s\nDESCRIPTION>>>",
+			req.FlowID, req.Name, toolsSection(req.Tools), req.Description)},
 	}
 	res := &Result{Notes: []string{}, Problems: []string{}}
 	for attempt := 1; attempt <= b.cfg.MaxAttempts; attempt++ {

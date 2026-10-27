@@ -29,6 +29,20 @@ func ValidateJSON(data []byte) (Result, error) {
 	return Validate(v), nil
 }
 
+// Parse returns the flow's structure when its shape is valid (links and
+// variables may still have problems; see Validate), or nil.
+func Parse(data any) *Flow {
+	s := &shape{}
+	flow := s.flow(data)
+	if len(s.problems) > 0 {
+		return nil
+	}
+	return flow
+}
+
+// Successors are the nodes a node can move on to.
+func Successors(n *Node) []string { return successors(n) }
+
 // Validate checks a decoded flow (see Decode) and reports every problem found.
 func Validate(data any) Result {
 	s := &shape{}
@@ -64,6 +78,8 @@ func successors(n *Node) []string {
 		return out
 	case "collect":
 		return []string{n.Next}
+	case "api":
+		return []string{n.Next, n.OnError}
 	}
 	return nil
 }
@@ -78,14 +94,23 @@ func texts(f *Flow) []located {
 	if f.Greeting != "" {
 		out = append(out, located{"greeting", f.Greeting})
 	}
+	out = append(out, toolInputTexts("tools", f.Tools)...)
 	for _, n := range f.Nodes {
 		base := "nodes." + n.ID
+		if n.Type == "api" {
+			for _, in := range n.Inputs {
+				out = append(out, located{base + ".inputs." + in.Name, in.Value})
+			}
+			out = append(out, located{base + ".say", n.Say})
+			continue
+		}
 		out = append(out, located{base + ".instructions", n.Instructions})
 		switch n.Type {
 		case "agent":
 			for i, t := range n.Transitions {
 				out = append(out, located{fmt.Sprintf("%s.transitions[%d].when", base, i), t.When})
 			}
+			out = append(out, toolInputTexts(base+".tools", n.Tools)...)
 		case "collect":
 			for i, fl := range n.Fields {
 				out = append(out, located{fmt.Sprintf("%s.fields[%d].instructions", base, i), fl.Instructions})
@@ -97,9 +122,60 @@ func texts(f *Flow) []located {
 	return out
 }
 
+func toolInputTexts(loc string, tools []ToolUse) []located {
+	var out []located
+	for i, t := range tools {
+		for _, in := range t.Inputs {
+			out = append(out, located{fmt.Sprintf("%s[%d].inputs.%s", loc, i, in.Name), in.Value})
+		}
+	}
+	return out
+}
+
 func unknownVariable(where, name string) string {
-	return fmt.Sprintf("%s: unknown variable {{%s}}; built-ins are %s, plus any captured or collected field",
+	return fmt.Sprintf("%s: unknown variable {{%s}}; built-ins are %s, plus any captured or collected field or saved API output",
 		where, name, strings.Join(BuiltinVariables, ", "))
+}
+
+// toolNameProblems: the LLM sees each tool by its name alone, so names on one step must differ.
+func toolNameProblems(f *Flow) []string {
+	var problems []string
+	everywhere := map[string]bool{}
+	for i, t := range f.Tools {
+		if everywhere[t.Name()] {
+			problems = append(problems, fmt.Sprintf("tools[%d].tool: a tool called '%s' is already in the list", i, t.Name()))
+		}
+		everywhere[t.Name()] = true
+	}
+	for _, n := range f.Nodes {
+		if n.Type != "agent" {
+			continue
+		}
+		transitions := map[string]bool{}
+		for _, t := range n.Transitions {
+			transitions[t.ToolName] = true
+		}
+		here := map[string]bool{}
+		for i, t := range n.Tools {
+			loc := fmt.Sprintf("nodes.%s.tools[%d].tool", n.ID, i)
+			name := t.Name()
+			switch {
+			case everywhere[name]:
+				problems = append(problems, fmt.Sprintf("%s: '%s' is already on every step (the flow's tools); remove it here", loc, name))
+			case here[name]:
+				problems = append(problems, fmt.Sprintf("%s: a tool called '%s' is already on this step", loc, name))
+			case transitions[name]:
+				problems = append(problems, fmt.Sprintf("%s: a transition on this step is also called '%s'; rename the transition", loc, name))
+			}
+			here[name] = true
+		}
+		for k, t := range n.Transitions {
+			if everywhere[t.ToolName] {
+				problems = append(problems, fmt.Sprintf("nodes.%s.transitions[%d]: '%s' is also the name of a tool on every step; rename the transition", n.ID, k, t.ToolName))
+			}
+		}
+	}
+	return problems
 }
 
 func isBuiltinVariable(name string) bool {
@@ -167,8 +243,18 @@ func checkFlow(f *Flow) []string {
 					add("%s.fields[%d].enum: only string fields can have an enum", base, i)
 				}
 			}
+		case "api":
+			for _, link := range []struct{ key, target string }{{"next", n.Next}, {"on_error", n.OnError}} {
+				switch {
+				case byID[link.target] == nil:
+					add("%s.%s: '%s' is not a node", base, link.key, link.target)
+				case link.target == n.ID:
+					add("%s.%s: a node can't move to itself", base, link.key)
+				}
+			}
 		}
 	}
+	problems = append(problems, toolNameProblems(f)...)
 	for _, n := range f.Nodes {
 		for i, t := range n.Transitions {
 			for _, c := range t.Capture {
@@ -246,6 +332,9 @@ func checkFlow(f *Flow) []string {
 		for i, fl := range n.Fields {
 			places = append(places, located{fl.Name, fmt.Sprintf("nodes.%s.fields[%d]", n.ID, i)})
 		}
+		for i, name := range n.Save {
+			places = append(places, located{name, fmt.Sprintf("nodes.%s.save[%d]", n.ID, i)})
+		}
 		for _, p := range places {
 			name, where := p.where, p.text
 			switch {
@@ -322,7 +411,7 @@ func bestEffortChecks(data any) []string {
 			continue
 		}
 		base := "nodes." + id
-		for _, key := range []string{"instructions", "goodbye"} {
+		for _, key := range []string{"instructions", "goodbye", "say"} {
 			if text, ok := node.Values[key].(string); ok {
 				found = append(found, located{base + "." + key, text})
 			}
@@ -350,8 +439,16 @@ func bestEffortChecks(data any) []string {
 				found = append(found, located{fmt.Sprintf("%s.transitions[%d].when", base, i), when})
 			}
 		}
-		if next, ok := node.Values["next"].(string); ok && !isNode(next) {
-			problems = append(problems, fmt.Sprintf("%s.next: '%s' is not a node", base, next))
+		for _, key := range []string{"next", "on_error"} {
+			if target, ok := node.Values[key].(string); ok && !isNode(target) {
+				problems = append(problems, fmt.Sprintf("%s.%s: '%s' is not a node", base, key, target))
+			}
+		}
+		save, _ := node.Values["save"].([]any)
+		for _, item := range save {
+			if name, ok := item.(string); ok {
+				defined[name] = true
+			}
 		}
 		fields, _ := node.Values["fields"].([]any)
 		for i, item := range fields {

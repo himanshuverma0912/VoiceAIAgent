@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/himanshuverma0912/VoiceAIAgent/config-service/internal/flowspec"
 	"github.com/himanshuverma0912/VoiceAIAgent/config-service/internal/store"
 )
 
@@ -90,6 +91,18 @@ func checkCall(c *store.Call, now time.Time) []string {
 			bad("steps[%d].node: not a node id", i)
 		}
 		between(fmt.Sprintf("steps[%d].ms", i), st.Ms, 0, maxCallDuration)
+	}
+	if c.Tools == nil {
+		c.Tools = []store.CallTool{}
+	}
+	if len(c.Tools) > 200 {
+		bad("tools: at most 200")
+	}
+	for i, t := range c.Tools {
+		if !flowspec.ToolRE.MatchString(t.Tool) {
+			bad("tools[%d].tool: not an '<integration>.<tool>' name", i)
+		}
+		between(fmt.Sprintf("tools[%d].ms", i), t.Ms, 0, 600_000)
 	}
 	between("turns.caller", c.Turns.Caller, 0, 10000)
 	between("turns.agent", c.Turns.Agent, 0, 10000)
@@ -216,6 +229,14 @@ type stepStats struct {
 	HungUpHere int    `json:"hung_up_here"` // ...and the caller hung up there
 }
 
+type toolStats struct {
+	Tool   string `json:"tool"`
+	Uses   int    `json:"uses"`
+	Failed int    `json:"failed"`
+	AvgMs  int    `json:"avg_ms"`
+	P95Ms  int    `json:"p95_ms"`
+}
+
 type versionStats struct {
 	Version       *int   `json:"version"` // null: a draft or the fallback file
 	Source        string `json:"source"`
@@ -241,6 +262,7 @@ type callSummary struct {
 	Duration  *durationStats   `json:"duration_ms"`
 	Latency   *durationStats   `json:"latency_ms"` // p50: typical reply; p95: slow replies
 	Steps     []stepStats      `json:"steps"`
+	Tools     []toolStats      `json:"tools"`
 	Versions  []versionStats   `json:"versions"`
 	PerDay    []dayStats       `json:"per_day"`
 	Usage     store.CallUsage  `json:"usage"`
@@ -291,6 +313,8 @@ func summarise(calls []store.Call, days int, channel string, now time.Time) call
 	versions := map[string]*versionAgg{}
 	perDay := map[string]*dayStats{}
 	turns := store.CallTurns{}
+	toolMs := map[string][]int{}
+	toolFailed := map[string]int{}
 
 	for _, c := range calls {
 		out.Outcomes[c.Outcome]++
@@ -302,6 +326,13 @@ func summarise(calls []store.Call, days int, channel string, now time.Time) call
 		out.Usage.Add(c.Usage)
 		turns.Caller += c.Turns.Caller
 		turns.Agent += c.Turns.Agent
+
+		for _, t := range c.Tools {
+			toolMs[t.Tool] = append(toolMs[t.Tool], t.Ms)
+			if !t.OK {
+				toolFailed[t.Tool]++
+			}
+		}
 
 		seen := map[string]bool{}
 		for _, st := range c.Steps {
@@ -379,6 +410,18 @@ func summarise(calls []store.Call, days int, channel string, now time.Time) call
 			return out.Steps[i].Reached > out.Steps[j].Reached
 		}
 		return out.Steps[i].Node < out.Steps[j].Node
+	})
+
+	out.Tools = []toolStats{}
+	for tool, ms := range toolMs {
+		st := stats(ms)
+		out.Tools = append(out.Tools, toolStats{Tool: tool, Uses: len(ms), Failed: toolFailed[tool], AvgMs: st.Avg, P95Ms: st.P95})
+	}
+	sort.Slice(out.Tools, func(i, j int) bool {
+		if out.Tools[i].Uses != out.Tools[j].Uses {
+			return out.Tools[i].Uses > out.Tools[j].Uses
+		}
+		return out.Tools[i].Tool < out.Tools[j].Tool
 	})
 
 	out.Versions = []versionStats{}

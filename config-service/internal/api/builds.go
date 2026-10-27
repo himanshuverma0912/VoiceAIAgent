@@ -149,9 +149,38 @@ func (s *Server) startBuild(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	go s.runBuild(job.ID, req.Workspace, builder.Request{FlowID: req.FlowID, Name: req.Name, Description: req.Description})
+	tools, err := s.builderTools(r.Context(), req.Workspace)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	go s.runBuild(job.ID, req.Workspace, builder.Request{FlowID: req.FlowID, Name: req.Name, Description: req.Description, Tools: tools})
 	snap, _ := s.builds.snapshot(job.ID, p.Actor())
 	writeJSON(w, http.StatusAccepted, snap)
+}
+
+// builderTools: the integration tools a flow of this workspace may use.
+func (s *Server) builderTools(ctx context.Context, workspace string) ([]builder.Tool, error) {
+	list, err := s.Store.ListIntegrations(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var out []builder.Tool
+	for _, i := range list {
+		if !i.AllowedFor(workspace) {
+			continue
+		}
+		for _, t := range i.Tools {
+			bt := builder.Tool{Ref: i.IntegrationID + "." + t.Name, Description: t.Description, Outputs: t.Outputs, Sensitive: t.Sensitive}
+			for _, in := range t.Inputs {
+				bt.Inputs = append(bt.Inputs, builder.ToolInput{
+					Name: in.Name, Type: in.Type, Description: in.Description, Required: in.Required, Locked: contains(t.Locked, in.Name),
+				})
+			}
+			out = append(out, bt)
+		}
+	}
+	return out, nil
 }
 
 func (s *Server) runBuild(id, workspace string, req builder.Request) {

@@ -22,12 +22,22 @@ export type Selection =
 
 type CardData = { id: string; node: FlowNode; isStart: boolean; problems: number; active: boolean };
 
-const COLORS: Record<FlowNode["type"], string> = { agent: "var(--agent)", collect: "var(--collect)", end: "var(--end)" };
+const COLORS: Record<FlowNode["type"], string> = {
+  agent: "var(--agent)",
+  collect: "var(--collect)",
+  api: "var(--api)",
+  end: "var(--end)",
+};
 
 function summary(node: FlowNode): string {
   if (node.type === "collect") {
     const names = (node.fields ?? []).map((f) => f.name).filter(Boolean);
     return names.length ? `Asks for ${names.join(", ")}` : "No fields yet";
+  }
+  if (node.type === "api") {
+    if (!node.tool) return "No tool chosen yet";
+    const saves = node.save?.length ? ` → ${node.save.join(", ")}` : "";
+    return `Calls ${node.tool}${saves}`;
   }
   return node.instructions || "No instructions yet";
 }
@@ -35,8 +45,10 @@ function summary(node: FlowNode): string {
 function footer(node: FlowNode): string {
   if (node.type === "agent") {
     const n = node.transitions?.length ?? 0;
-    return `${node.on_enter === "wait" ? "listens first" : "speaks first"} · ${n} way${n === 1 ? "" : "s"} out`;
+    const tools = node.tools?.length ? ` · ${node.tools.length} tool${node.tools.length === 1 ? "" : "s"}` : "";
+    return `${node.on_enter === "wait" ? "listens first" : "speaks first"} · ${n} way${n === 1 ? "" : "s"} out${tools}`;
   }
+  if (node.type === "api") return node.verifies ? "verifies the caller" : "runs by itself";
   if (node.type === "collect") return `${node.fields?.length ?? 0} field${node.fields?.length === 1 ? "" : "s"}`;
   return "hangs up after";
 }
@@ -116,7 +128,7 @@ export function Canvas(props: {
           label: short(e.label),
           selected: selection.kind === "node" && selection.id === e.from && selection.transition === e.transition && e.transition !== undefined,
           markerEnd: { type: MarkerType.ArrowClosed, width: 18, height: 18 },
-          style: { strokeWidth: 1.6 },
+          style: e.kind === "error" ? { strokeWidth: 1.6, strokeDasharray: "5 4", stroke: "var(--bad)" } : { strokeWidth: 1.6 },
           data: { transition: e.transition },
         })),
     [flow, selection],

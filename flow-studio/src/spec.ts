@@ -40,11 +40,31 @@ export interface CollectField {
   enum?: string[] | null;
 }
 
+/** A tool of an integration ("<integration>.<tool>") offered to the LLM. Inputs set
+ * here are filled from {{variables}} and hidden from the LLM. */
+export interface ToolUse {
+  tool: string;
+  inputs?: Record<string, string>;
+}
+
 export interface AgentNode {
   type: "agent";
   instructions: string;
   transitions?: Transition[];
   on_enter?: "speak" | "wait";
+  tools?: ToolUse[];
+}
+
+/** Calls one tool without the LLM, then moves on (next) or, if it fails, to on_error. */
+export interface ApiNode {
+  type: "api";
+  tool: string;
+  inputs?: Record<string, string>;
+  save?: string[];
+  say?: string;
+  verifies?: boolean;
+  next: string;
+  on_error: string;
 }
 
 export interface CollectNode {
@@ -60,7 +80,7 @@ export interface EndNode {
   goodbye?: string;
 }
 
-export type FlowNode = AgentNode | CollectNode | EndNode;
+export type FlowNode = AgentNode | CollectNode | ApiNode | EndNode;
 export type NodeType = FlowNode["type"];
 
 export interface FlowSettings {
@@ -80,6 +100,7 @@ export interface Flow {
   greeting?: string | null;
   allow_end_call_anywhere?: boolean;
   settings?: FlowSettings;
+  tools?: ToolUse[]; // on every conversation step
   start_node: string;
   nodes: Record<string, FlowNode>;
 }
@@ -97,6 +118,7 @@ export const IDENTIFIER_HINT = "lower-case letters, digits and _, starting with 
 export const NODE_TYPE_LABEL: Record<NodeType, string> = {
   agent: "Conversation step",
   collect: "Collect details",
+  api: "API call",
   end: "End call",
 };
 
@@ -106,7 +128,7 @@ export function isEditable(value: unknown): value is Flow {
   const nodes = (value as Flow).nodes;
   if (!nodes || typeof nodes !== "object" || Array.isArray(nodes)) return false;
   return Object.values(nodes).every(
-    (n) => n && typeof n === "object" && ["agent", "collect", "end"].includes((n as FlowNode).type),
+    (n) => n && typeof n === "object" && ["agent", "collect", "api", "end"].includes((n as FlowNode).type),
   );
 }
 
@@ -160,6 +182,8 @@ export function newNode(type: NodeType, otherIds: string[]): FlowNode {
         fields: [{ name: "full_name", builtin: "name" }],
         next: target,
       };
+    case "api":
+      return { type: "api", tool: "", inputs: {}, save: [], say: "One moment while I check that.", next: target, on_error: target };
     case "end":
       return { type: "end", instructions: "Thank the caller and say what happens next." };
   }
@@ -187,9 +211,17 @@ export function variablesOf(flow: Flow): { name: string; about: string }[] {
         for (const [name, c] of Object.entries(t.capture ?? {})) add(name, c.description || `captured in ${id}`);
     } else if (node.type === "collect") {
       for (const f of node.fields ?? []) add(f.name, f.description || `collected in ${id}`);
+    } else if (node.type === "api") {
+      for (const name of node.save ?? []) add(name, `from ${node.tool || "the API"} in ${id}`);
     }
   }
   return out;
+}
+
+/** "demo_bank.get_card_balance" -> ["demo_bank", "get_card_balance"] */
+export function splitTool(ref: string): [string, string] {
+  const i = ref.indexOf(".");
+  return i < 0 ? [ref, ""] : [ref.slice(0, i), ref.slice(i + 1)];
 }
 
 export interface Edge {
@@ -198,6 +230,7 @@ export interface Edge {
   to: string;
   label: string;
   transition?: number; // index in the agent node's transitions
+  kind?: "ok" | "error"; // api steps
 }
 
 export function edgesOf(flow: Flow): Edge[] {
@@ -209,6 +242,9 @@ export function edgesOf(flow: Flow): Edge[] {
       });
     } else if (node.type === "collect" && node.next) {
       edges.push({ id: `n:${id}`, from: id, to: node.next, label: "when all details are collected" });
+    } else if (node.type === "api") {
+      if (node.next) edges.push({ id: `n:${id}`, from: id, to: node.next, label: node.verifies ? "caller verified" : "when it works", kind: "ok" });
+      if (node.on_error) edges.push({ id: `e:${id}`, from: id, to: node.on_error, label: node.verifies ? "not verified" : "if it fails", kind: "error" });
     }
   }
   return edges;
@@ -221,6 +257,10 @@ export function renameNode(flow: Flow, oldId: string, newId: string): Flow {
   for (const node of Object.values(nodes)) {
     if (node.type === "agent") for (const t of node.transitions ?? []) if (t.to === oldId) t.to = newId;
     if (node.type === "collect" && node.next === oldId) node.next = newId;
+    if (node.type === "api") {
+      if (node.next === oldId) node.next = newId;
+      if (node.on_error === oldId) node.on_error = newId;
+    }
   }
   return { ...flow, nodes, start_node: flow.start_node === oldId ? newId : flow.start_node };
 }
@@ -233,6 +273,8 @@ export function deleteNode(flow: Flow, id: string): Flow {
     if (nid === id) continue;
     if (node.type === "agent") nodes[nid] = { ...node, transitions: (node.transitions ?? []).filter((t) => t.to !== id) };
     else if (node.type === "collect" && node.next === id) nodes[nid] = { ...node, next: "" };
+    else if (node.type === "api" && (node.next === id || node.on_error === id))
+      nodes[nid] = { ...node, next: node.next === id ? "" : node.next, on_error: node.on_error === id ? "" : node.on_error };
     else nodes[nid] = node;
   }
   return { ...flow, nodes };
