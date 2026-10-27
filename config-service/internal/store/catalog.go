@@ -22,27 +22,27 @@ var CatalogKinds = map[string]string{
 }
 
 type CatalogEntry struct {
-	Kind      string    `json:"kind"`
-	ModelID   string    `json:"model_id"`
-	Label     string    `json:"label"`
-	Notes     string    `json:"notes"`
-	Languages []string  `json:"languages"` // empty: any language
-	Teams     []string  `json:"teams"`     // empty: every team
-	Enabled   bool      `json:"enabled"`
-	UpdatedAt time.Time `json:"updated_at"`
-	UpdatedBy string    `json:"updated_by"`
+	Kind       string    `json:"kind"`
+	ModelID    string    `json:"model_id"`
+	Label      string    `json:"label"`
+	Notes      string    `json:"notes"`
+	Languages  []string  `json:"languages"`  // empty: any language
+	Workspaces []string  `json:"workspaces"` // empty: every workspace
+	Enabled    bool      `json:"enabled"`
+	UpdatedAt  time.Time `json:"updated_at"`
+	UpdatedBy  string    `json:"updated_by"`
 }
 
-// AllowedFor reports whether a flow of team may use this entry.
-func (e CatalogEntry) AllowedFor(team string) bool {
+// AllowedFor reports whether a flow of workspace may use this entry.
+func (e CatalogEntry) AllowedFor(workspace string) bool {
 	if !e.Enabled {
 		return false
 	}
-	if len(e.Teams) == 0 {
+	if len(e.Workspaces) == 0 {
 		return true
 	}
-	for _, t := range e.Teams {
-		if t == team {
+	for _, t := range e.Workspaces {
+		if t == workspace {
 			return true
 		}
 	}
@@ -51,7 +51,7 @@ func (e CatalogEntry) AllowedFor(team string) bool {
 
 func (s *Store) ListCatalog(ctx context.Context) ([]CatalogEntry, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT kind, model_id, label, notes, languages, teams, enabled, updated_at, updated_by
+		SELECT kind, model_id, label, notes, languages, workspaces, enabled, updated_at, updated_by
 		FROM model_catalog ORDER BY kind, label, model_id`)
 	if err != nil {
 		return nil, err
@@ -60,11 +60,11 @@ func (s *Store) ListCatalog(ctx context.Context) ([]CatalogEntry, error) {
 	out := []CatalogEntry{}
 	for rows.Next() {
 		var e CatalogEntry
-		var langs, teams pq.StringArray
-		if err := rows.Scan(&e.Kind, &e.ModelID, &e.Label, &e.Notes, &langs, &teams, &e.Enabled, &e.UpdatedAt, &e.UpdatedBy); err != nil {
+		var langs, wss pq.StringArray
+		if err := rows.Scan(&e.Kind, &e.ModelID, &e.Label, &e.Notes, &langs, &wss, &e.Enabled, &e.UpdatedAt, &e.UpdatedBy); err != nil {
 			return nil, err
 		}
-		e.Languages, e.Teams = append([]string{}, langs...), append([]string{}, teams...)
+		e.Languages, e.Workspaces = append([]string{}, langs...), append([]string{}, wss...)
 		out = append(out, e)
 	}
 	return out, rows.Err()
@@ -75,13 +75,13 @@ func (s *Store) PutCatalogEntry(ctx context.Context, e CatalogEntry, actor strin
 	err = withTx(ctx, s.db, func(tx *sql.Tx) error {
 		var inserted bool
 		if err := tx.QueryRowContext(ctx, `
-			INSERT INTO model_catalog (kind, model_id, label, notes, languages, teams, enabled, updated_by)
+			INSERT INTO model_catalog (kind, model_id, label, notes, languages, workspaces, enabled, updated_by)
 			VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 			ON CONFLICT (kind, model_id) DO UPDATE SET
 				label = EXCLUDED.label, notes = EXCLUDED.notes, languages = EXCLUDED.languages,
-				teams = EXCLUDED.teams, enabled = EXCLUDED.enabled, updated_at = now(), updated_by = EXCLUDED.updated_by
+				workspaces = EXCLUDED.workspaces, enabled = EXCLUDED.enabled, updated_at = now(), updated_by = EXCLUDED.updated_by
 			RETURNING (xmax = 0)`,
-			e.Kind, e.ModelID, e.Label, e.Notes, pq.StringArray(e.Languages), pq.StringArray(e.Teams), e.Enabled, actor,
+			e.Kind, e.ModelID, e.Label, e.Notes, pq.StringArray(e.Languages), pq.StringArray(e.Workspaces), e.Enabled, actor,
 		).Scan(&inserted); err != nil {
 			return err
 		}
@@ -91,7 +91,7 @@ func (s *Store) PutCatalogEntry(ctx context.Context, e CatalogEntry, actor strin
 			action = "catalog.add"
 		}
 		return audit(ctx, tx, actor, action, e.Kind+"/"+e.ModelID, map[string]any{
-			"label": e.Label, "enabled": e.Enabled, "teams": e.Teams, "languages": e.Languages,
+			"label": e.Label, "enabled": e.Enabled, "workspaces": e.Workspaces, "languages": e.Languages,
 		})
 	})
 	return created, err
@@ -142,8 +142,8 @@ func (s *Store) DeleteCatalogEntry(ctx context.Context, kind, modelID, actor str
 	})
 }
 
-// FlowTeam is the team a flow belongs to ("" if unassigned or not found).
-func (s *Store) FlowTeam(ctx context.Context, flowID string) (string, error) {
+// FlowWorkspace is the workspace a flow belongs to ("" if unassigned or not found).
+func (s *Store) FlowWorkspace(ctx context.Context, flowID string) (string, error) {
 	f, err := s.GetFlow(ctx, flowID)
 	if errors.Is(err, ErrNotFound) {
 		return "", nil
@@ -151,5 +151,5 @@ func (s *Store) FlowTeam(ctx context.Context, flowID string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return f.Team, nil
+	return f.Workspace, nil
 }

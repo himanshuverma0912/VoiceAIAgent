@@ -7,8 +7,6 @@ import (
 	"net/http"
 	"sync"
 	"time"
-
-	"github.com/himanshuverma0912/VoiceAIAgent/config-service/internal/auth"
 )
 
 // Browser test calls ("Talk to this draft"): Flow Studio asks for a session,
@@ -54,15 +52,15 @@ func randomHex(n int) string {
 }
 
 // POST /v1/flows/{flow_id}/test-sessions — talk to the flow's current draft
-// from the browser. Needs flow-editor or flow-publisher in the flow's team.
+// from the browser. Needs maker or checker in the flow's workspace.
 func (s *Server) startTestSession(w http.ResponseWriter, r *http.Request) {
-	f, ok := s.flowFor(w, r, auth.RoleViewer)
+	f, ok := s.flowFor(w, r, toView)
 	if !ok {
 		return
 	}
 	p := principal(r)
-	if !p.Can(auth.RoleEditor, f.Team) && !p.Can(auth.RolePublisher, f.Team) {
-		writeError(w, http.StatusForbidden, "testing a draft needs the flow-editor or flow-publisher role for team "+f.Team)
+	if !p.CanEdit(f.Workspace) && !p.CanApprove(f.Workspace) {
+		writeError(w, http.StatusForbidden, "testing a draft needs you to be a maker or checker in workspace "+f.Workspace)
 		return
 	}
 	if !s.LiveKit.Enabled() {
@@ -74,7 +72,7 @@ func (s *Server) startTestSession(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
-	_, problems, err := s.checkFlow(r.Context(), draft.Spec, f.FlowID, f.Team)
+	_, problems, err := s.checkFlow(r.Context(), draft.Spec, f.FlowID, f.Workspace)
 	if err != nil || len(problems) > 0 {
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{"error": "fix the draft's problems before testing it", "problems": problems})
 		return
@@ -117,12 +115,12 @@ func (s *Server) internalDraft(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
-	team, err := s.Store.FlowTeam(r.Context(), id)
+	ws, err := s.Store.FlowWorkspace(r.Context(), id)
 	if err != nil {
 		s.fail(w, err)
 		return
 	}
-	if _, problems, err := s.checkFlow(r.Context(), d.Spec, id, team); err != nil || len(problems) > 0 {
+	if _, problems, err := s.checkFlow(r.Context(), d.Spec, id, ws); err != nil || len(problems) > 0 {
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{"error": "the draft has problems", "problems": problems})
 		return
 	}

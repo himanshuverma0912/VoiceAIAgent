@@ -60,7 +60,8 @@ func TestCallHistory(t *testing.T) {
 
 	vera := kc.Token(t, "vera@demo.corp", []string{"viewer"}, []string{"emi"}, nil)
 	ravi := kc.Token(t, "ravi@demo.corp", []string{"viewer", "flow-editor"}, []string{"complaints"}, nil)
-	c.json("PUT", "/v1/flows/emi_payment_issue/draft?team=emi", adminToken, spec(t, "emi-payment-issue.json"), 200)
+	c.json("PUT", "/v1/workspaces/emi", adminToken, []byte(`{"name": "EMI"}`), 201)
+	c.json("PUT", "/v1/flows/emi_payment_issue/draft?workspace=emi", adminToken, spec(t, "emi-payment-issue.json"), 200)
 
 	now := time.Now()
 	// Only the agent's token may send records.
@@ -109,7 +110,7 @@ func TestCallHistory(t *testing.T) {
 		c.json("POST", "/internal/v1/calls", runtimeToken, []byte(b), 422)
 	}
 
-	// Viewers of the team see the calls; other teams don't see the flow at all.
+	// Members of the workspace see the calls; other workspaces don't see the flow at all.
 	list := c.json("GET", "/v1/flows/emi_payment_issue/calls", vera, nil, 200)
 	calls := list["calls"].([]any)
 	if len(calls) != 4 || calls[0].(map[string]any)["call_id"] != "AJ_one" {

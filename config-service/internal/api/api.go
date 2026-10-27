@@ -12,12 +12,18 @@
 //
 // /healthz, /readyz no token.
 //
-// Who may do what:
+// Who may do what: every flow belongs to a workspace, and people belong to
+// workspaces (managed in Flow Studio, stored here):
 //
-//	viewer          see the flows of their teams (everyone signed in has it)
-//	flow-editor     create flows for their teams, save drafts
-//	flow-publisher  publish their teams' flows
-//	platform-admin  everything, in every team; phone numbers; audit log
+//	member          see the workspace's flows, drafts, versions and calls
+//	maker           create flows in it, save drafts, submit them for review
+//	checker         approve (publishes) or reject other people's submissions
+//	owner           add and remove members, set their roles
+//	platform-admin  (a Keycloak role) all of the above in every workspace;
+//	                workspaces, phone numbers, model catalog, audit log
+//
+// People never publish directly: a maker submits, a different person who is a
+// checker approves. Only ADMIN_TOKEN (scripts, CI) may publish a draft directly.
 package api
 
 import (
@@ -35,6 +41,7 @@ import (
 	"time"
 
 	"github.com/himanshuverma0912/VoiceAIAgent/config-service/internal/auth"
+	"github.com/himanshuverma0912/VoiceAIAgent/config-service/internal/builder"
 	"github.com/himanshuverma0912/VoiceAIAgent/config-service/internal/flowspec"
 	"github.com/himanshuverma0912/VoiceAIAgent/config-service/internal/livekit"
 	"github.com/himanshuverma0912/VoiceAIAgent/config-service/internal/store"
@@ -44,7 +51,7 @@ const maxBody = 1 << 20 // 1 MB; a large flow is ~20 KB
 
 var (
 	identifierRE = regexp.MustCompile(`^[a-z][a-z0-9_]{0,47}$`)
-	teamRE       = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,31}$`)
+	workspaceRE  = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,31}$`)
 	e164RE       = regexp.MustCompile(`^\+[1-9][0-9]{6,14}$`)
 )
 
@@ -52,10 +59,12 @@ type Server struct {
 	Store        *store.Store
 	AdminToken   string
 	RuntimeToken string
-	Users        *auth.Verifier // nil: only ADMIN_TOKEN is accepted on /v1
-	LiveKit      livekit.Config // for browser test calls; empty: switched off
+	Users        *auth.Verifier   // nil: only ADMIN_TOKEN is accepted on /v1
+	LiveKit      livekit.Config   // for browser test calls; empty: switched off
+	Builder      *builder.Builder // turns a written description into a flow; nil: switched off
 
-	tests rateLimiter
+	tests  rateLimiter
+	builds buildJobs
 }
 
 func (s *Server) Handler() http.Handler {
@@ -73,7 +82,7 @@ func (s *Server) Handler() http.Handler {
 	v1("PUT /v1/flows/{flow_id}/draft", s.putDraft)
 	v1("GET /v1/flows/{flow_id}/draft", s.getDraft)
 	v1("POST /v1/flows/{flow_id}/publish", s.publish)
-	v1("PUT /v1/flows/{flow_id}/team", s.setTeam)
+	v1("PUT /v1/flows/{flow_id}/workspace", s.setWorkspace)
 	v1("PUT /v1/flows/{flow_id}/layout", s.putLayout)
 	v1("POST /v1/flows/{flow_id}/test-sessions", s.startTestSession)
 	v1("GET /v1/flows/{flow_id}/versions", s.listVersions)
@@ -84,6 +93,21 @@ func (s *Server) Handler() http.Handler {
 	v1("GET /v1/audit", s.audit)
 	v1("GET /v1/flows/{flow_id}/calls", s.listCalls)
 	v1("GET /v1/flows/{flow_id}/calls/summary", s.callSummary)
+	v1("GET /v1/workspaces", s.listWorkspaces)
+	v1("PUT /v1/workspaces/{workspace}", s.putWorkspace)
+	v1("DELETE /v1/workspaces/{workspace}", s.deleteWorkspace)
+	v1("GET /v1/workspaces/{workspace}/members", s.listMembers)
+	v1("PUT /v1/workspaces/{workspace}/members/{email}", s.putMember)
+	v1("DELETE /v1/workspaces/{workspace}/members/{email}", s.removeMember)
+	v1("POST /v1/flows/{flow_id}/reviews", s.submitReview)
+	v1("GET /v1/flows/{flow_id}/reviews", s.listReviews)
+	v1("GET /v1/flows/{flow_id}/reviews/{review_id}", s.getReview)
+	v1("POST /v1/flows/{flow_id}/reviews/{review_id}/approve", s.approveReview)
+	v1("POST /v1/flows/{flow_id}/reviews/{review_id}/reject", s.rejectReview)
+	v1("POST /v1/flows/{flow_id}/reviews/{review_id}/withdraw", s.withdrawReview)
+	v1("GET /v1/reviews", s.pendingReviews)
+	v1("POST /v1/builds", s.startBuild)
+	v1("GET /v1/builds/{build_id}", s.getBuild)
 	v1("GET /v1/catalog", s.listCatalog)
 	v1("PUT /v1/catalog/{kind}/{model_id}", s.putCatalogEntry)
 	v1("DELETE /v1/catalog/{kind}/{model_id}", s.deleteCatalogEntry)
@@ -134,12 +158,38 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 				writeError(w, http.StatusForbidden, "your account has no Flow Studio role")
 				return
 			}
+			if err := s.loadMemberships(r.Context(), &p); err != nil {
+				s.fail(w, err)
+				return
+			}
 		default:
 			writeError(w, http.StatusUnauthorized, "missing or wrong token")
 			return
 		}
 		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), principalKey{}, p)))
 	})
+}
+
+// loadMemberships fills in p's workspaces. The first time someone signs in
+// with Keycloak team groups, those become their first memberships.
+func (s *Server) loadMemberships(ctx context.Context, p *auth.Principal) error {
+	var teams []string
+	for _, t := range p.Teams {
+		if workspaceRE.MatchString(t) {
+			teams = append(teams, t)
+		}
+	}
+	if len(teams) > 0 {
+		if err := s.Store.ImportDirectoryMemberships(ctx, p.Email, teams, p.HasRole(auth.RoleEditor), p.HasRole(auth.RolePublisher)); err != nil {
+			return err
+		}
+	}
+	m, err := s.Store.Memberships(ctx, p.Email)
+	if err != nil {
+		return err
+	}
+	p.Workspaces = m
+	return nil
 }
 
 func requireToken(token string, next http.Handler) http.Handler {
@@ -162,9 +212,18 @@ func requireAdmin(w http.ResponseWriter, r *http.Request, what string) bool {
 	return true
 }
 
-// flowFor loads a flow and checks the caller may use role on it. Flows of other
-// teams answer 404, so their names don't leak.
-func (s *Server) flowFor(w http.ResponseWriter, r *http.Request, role string) (*store.FlowSummary, bool) {
+// What a request needs to do with a flow.
+type need int
+
+const (
+	toView    need = iota // any member of the workspace
+	toEdit                // a maker
+	toApprove             // a checker
+)
+
+// flowFor loads a flow and checks the caller may act on it. Flows of
+// workspaces the caller isn't in answer 404, so their names don't leak.
+func (s *Server) flowFor(w http.ResponseWriter, r *http.Request, n need) (*store.FlowSummary, bool) {
 	id, ok := flowID(w, r)
 	if !ok {
 		return nil, false
@@ -175,12 +234,16 @@ func (s *Server) flowFor(w http.ResponseWriter, r *http.Request, role string) (*
 		return nil, false
 	}
 	p := principal(r)
-	if !p.IsAdmin() && (f.Team == "" || !p.InTeam(f.Team)) {
+	if !p.IsAdmin() && !p.Sees(f.Workspace) {
 		writeError(w, http.StatusNotFound, "not found")
 		return nil, false
 	}
-	if !p.Can(role, f.Team) {
-		writeError(w, http.StatusForbidden, fmt.Sprintf("you need the %s role for team %s", role, f.Team))
+	switch {
+	case n == toEdit && !p.CanEdit(f.Workspace):
+		writeError(w, http.StatusForbidden, "you need to be a maker in workspace "+f.Workspace)
+		return nil, false
+	case n == toApprove && !p.CanApprove(f.Workspace):
+		writeError(w, http.StatusForbidden, "you need to be a checker in workspace "+f.Workspace)
 		return nil, false
 	}
 	return f, true
@@ -237,8 +300,14 @@ func (s *Server) fail(w http.ResponseWriter, err error) {
 		})
 	case errors.Is(err, store.ErrNotFound):
 		writeError(w, http.StatusNotFound, "not found")
-	case errors.Is(err, store.ErrNoDraft), errors.Is(err, store.ErrNotPublished), errors.Is(err, store.ErrConflict):
+	case errors.Is(err, store.ErrNoWorkspace):
+		writeError(w, http.StatusNotFound, err.Error())
+	case errors.Is(err, store.ErrNoDraft), errors.Is(err, store.ErrNotPublished), errors.Is(err, store.ErrConflict),
+		errors.Is(err, store.ErrLastOwner), errors.Is(err, store.ErrWorkspaceNotEmpty),
+		errors.Is(err, store.ErrUnchangedDraft), errors.Is(err, store.ErrNotPending):
 		writeError(w, http.StatusConflict, err.Error())
+	case errors.Is(err, store.ErrSelfApproval), errors.Is(err, store.ErrNotSubmitter), errors.Is(err, store.ErrOwnRejection):
+		writeError(w, http.StatusForbidden, err.Error())
 	default:
 		slog.Error("request failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "internal error")
@@ -321,19 +390,19 @@ func (s *Server) ready(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
 }
 
-// GET /v1/me — who is signed in, with their roles and teams (for Flow Studio).
+// GET /v1/me — who is signed in: global roles and workspace memberships.
 func (s *Server) me(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, principal(r))
 }
 
-// POST /v1/validate[?team=x] — check a flow without saving it (for the UI, as
-// you type). With team, the model catalog is checked as it would be for that team.
+// POST /v1/validate[?workspace=x] — check a flow without saving it (for the UI,
+// as you type). With workspace, the model catalog is checked as it would be there.
 func (s *Server) validate(w http.ResponseWriter, r *http.Request) {
 	body, ok := readBody(w, r)
 	if !ok {
 		return
 	}
-	_, problems, err := s.checkFlow(r.Context(), body, "", r.URL.Query().Get("team"))
+	_, problems, err := s.checkFlow(r.Context(), body, "", workspaceParam(r))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "not valid JSON: "+err.Error())
 		return
@@ -341,13 +410,29 @@ func (s *Server) validate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"valid": len(problems) == 0, "problems": problems})
 }
 
+// workspaceParam reads ?workspace= (or the older ?team=).
+func workspaceParam(r *http.Request) string {
+	if ws := r.URL.Query().Get("workspace"); ws != "" {
+		return ws
+	}
+	return r.URL.Query().Get("team")
+}
+
+// GET /v1/flows[?workspace=x] — the flows of the caller's workspaces (admins: all).
 func (s *Server) listFlows(w http.ResponseWriter, r *http.Request) {
 	p := principal(r)
-	var teams []string // nil: every flow
+	var workspaces []string // nil: every flow
 	if !p.IsAdmin() {
-		teams = p.Teams
+		workspaces = p.WorkspaceIDs()
 	}
-	flows, err := s.Store.ListFlows(r.Context(), teams)
+	if ws := workspaceParam(r); ws != "" {
+		if !p.Sees(ws) {
+			writeJSON(w, http.StatusOK, map[string]any{"flows": []store.FlowSummary{}})
+			return
+		}
+		workspaces = []string{ws}
+	}
+	flows, err := s.Store.ListFlows(r.Context(), workspaces)
 	if err != nil {
 		s.fail(w, err)
 		return
@@ -356,7 +441,7 @@ func (s *Server) listFlows(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) getFlow(w http.ResponseWriter, r *http.Request) {
-	if f, ok := s.flowFor(w, r, auth.RoleViewer); ok {
+	if f, ok := s.flowFor(w, r, toView); ok {
 		writeJSON(w, http.StatusOK, f)
 	}
 }
@@ -364,13 +449,13 @@ func (s *Server) getFlow(w http.ResponseWriter, r *http.Request) {
 // PUT /v1/flows/{flow_id}/draft — save the flow being edited (creates the flow
 // on first save). Saving works even with problems, so work isn't lost; the
 // problems come back in the response. Publishing needs zero problems.
-// A new flow belongs to ?team=<name> (optional if you're in exactly one team).
+// A new flow goes in ?workspace=<id> (optional if you're a maker in just one).
 func (s *Server) putDraft(w http.ResponseWriter, r *http.Request) {
 	id, ok := flowID(w, r)
 	if !ok {
 		return
 	}
-	team, ok := s.draftTeam(w, r, id)
+	workspace, ok := s.draftWorkspace(w, r, id)
 	if !ok {
 		return
 	}
@@ -378,14 +463,14 @@ func (s *Server) putDraft(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	catalogTeam := team // a new flow's team; an existing flow's own team
-	if catalogTeam == "" {
-		t, err := s.Store.FlowTeam(r.Context(), id)
+	catalogWorkspace := workspace // a new flow's workspace; an existing flow's own one
+	if catalogWorkspace == "" {
+		ws, err := s.Store.FlowWorkspace(r.Context(), id)
 		if err != nil {
 			s.fail(w, err)
 			return
 		}
-		catalogTeam = t
+		catalogWorkspace = ws
 	}
 	decoded, problems, err := checkSpec(body, id)
 	if err != nil {
@@ -397,14 +482,14 @@ func (s *Server) putDraft(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
-	problems = append(problems, catalogProblems(entries, decoded, catalogTeam)...)
+	problems = append(problems, catalogProblems(entries, decoded, catalogWorkspace)...)
 	name := id
 	if root, ok := decoded.(*flowspec.Object); ok {
 		if n, ok := root.Values["name"].(string); ok && n != "" {
 			name = n
 		}
 	}
-	if err := s.Store.SaveDraft(r.Context(), id, name, team, body, problems, actor(r), strings.Trim(r.Header.Get("If-Match"), `" `)); err != nil {
+	if err := s.Store.SaveDraft(r.Context(), id, name, workspace, body, problems, actor(r), strings.Trim(r.Header.Get("If-Match"), `" `)); err != nil {
 		s.fail(w, err)
 		return
 	}
@@ -413,43 +498,59 @@ func (s *Server) putDraft(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// draftTeam checks the caller may save a draft of flow id, and returns the team
-// a new flow will belong to.
-func (s *Server) draftTeam(w http.ResponseWriter, r *http.Request, id string) (string, bool) {
+// draftWorkspace checks the caller may save a draft of flow id, and returns the
+// workspace a new flow will go in ("" for an existing flow).
+func (s *Server) draftWorkspace(w http.ResponseWriter, r *http.Request, id string) (string, bool) {
 	p := principal(r)
 	if _, err := s.Store.GetFlow(r.Context(), id); err == nil {
 		if r.Header.Get("If-None-Match") == "*" { // "create only" (Flow Studio's New flow)
 			writeError(w, http.StatusConflict, fmt.Sprintf("a flow called %s already exists", id))
 			return "", false
 		}
-		_, ok := s.flowFor(w, r, auth.RoleEditor)
+		_, ok := s.flowFor(w, r, toEdit)
 		return "", ok
 	} else if !errors.Is(err, store.ErrNotFound) {
 		s.fail(w, err)
 		return "", false
 	}
-	team := r.URL.Query().Get("team")
-	if team == "" && len(p.Teams) == 1 {
-		team = p.Teams[0]
+	ws := workspaceParam(r)
+	if ws == "" {
+		var makerIn []string
+		for _, m := range p.Workspaces {
+			if m.Maker {
+				makerIn = append(makerIn, m.WorkspaceID)
+			}
+		}
+		if len(makerIn) == 1 {
+			ws = makerIn[0]
+		}
 	}
 	switch {
-	case team == "" && p.IsAdmin():
+	case ws == "" && p.IsAdmin():
 		return "", true // a platform admin may create an unassigned flow
-	case team == "":
-		writeError(w, http.StatusBadRequest, "say which of your teams owns the new flow: ?team=<name>")
+	case ws == "":
+		writeError(w, http.StatusBadRequest, "say which workspace the new flow goes in: ?workspace=<id>")
 		return "", false
-	case !teamRE.MatchString(team):
-		writeError(w, http.StatusBadRequest, "team must be lower-case letters, digits, - and _")
+	case !workspaceRE.MatchString(ws):
+		writeError(w, http.StatusBadRequest, "workspace ids are lower-case letters, digits, - and _")
 		return "", false
-	case !p.Can(auth.RoleEditor, team):
-		writeError(w, http.StatusForbidden, fmt.Sprintf("you need the %s role for team %s", auth.RoleEditor, team))
+	case !p.CanEdit(ws):
+		if !p.Sees(ws) {
+			writeError(w, http.StatusNotFound, "there's no such workspace")
+		} else {
+			writeError(w, http.StatusForbidden, "you need to be a maker in workspace "+ws)
+		}
 		return "", false
 	}
-	return team, true
+	if _, err := s.Store.GetWorkspace(r.Context(), ws); err != nil {
+		s.fail(w, err)
+		return "", false
+	}
+	return ws, true
 }
 
 func (s *Server) getDraft(w http.ResponseWriter, r *http.Request) {
-	f, ok := s.flowFor(w, r, auth.RoleViewer)
+	f, ok := s.flowFor(w, r, toView)
 	if !ok {
 		return
 	}
@@ -460,22 +561,28 @@ func (s *Server) getDraft(w http.ResponseWriter, r *http.Request) {
 	}
 	// Check again rather than show the problems found when it was saved: the
 	// model catalog may have changed since (e.g. a model switched off).
-	if _, problems, err := s.checkFlow(r.Context(), d.Spec, f.FlowID, f.Team); err == nil {
+	if _, problems, err := s.checkFlow(r.Context(), d.Spec, f.FlowID, f.Workspace); err == nil {
 		d.Problems = problems
 	}
 	writeJSON(w, http.StatusOK, d)
 }
 
-// POST /v1/flows/{flow_id}/publish — the draft becomes the next version. Numbers
-// that follow the latest version use it from their next call.
+// POST /v1/flows/{flow_id}/publish — the draft becomes the next version
+// directly. Only for ADMIN_TOKEN (scripts, CI): people go through review
+// (POST /v1/flows/{id}/reviews, then a checker approves). Numbers that follow
+// the latest version use it from their next call.
 func (s *Server) publish(w http.ResponseWriter, r *http.Request) {
-	f, ok := s.flowFor(w, r, auth.RolePublisher)
+	if !principal(r).Script {
+		writeError(w, http.StatusForbidden, "changes are published by approval: submit the draft for review, and a checker in the workspace approves it")
+		return
+	}
+	f, ok := s.flowFor(w, r, toApprove)
 	if !ok {
 		return
 	}
 	id := f.FlowID
 	v, unchanged, err := s.Store.Publish(r.Context(), id, actor(r), func(spec []byte) []string {
-		_, problems, err := s.checkFlow(r.Context(), spec, id, f.Team)
+		_, problems, err := s.checkFlow(r.Context(), spec, id, f.Workspace)
 		if err != nil {
 			return []string{"(top level): not valid JSON: " + err.Error()}
 		}
@@ -498,7 +605,7 @@ func (s *Server) publish(w http.ResponseWriter, r *http.Request) {
 // PUT /v1/flows/{flow_id}/layout {"positions": {"<node id>": {"x": 10, "y": 20}}}
 // — where Flow Studio draws the nodes.
 func (s *Server) putLayout(w http.ResponseWriter, r *http.Request) {
-	f, ok := s.flowFor(w, r, auth.RoleEditor)
+	f, ok := s.flowFor(w, r, toEdit)
 	if !ok {
 		return
 	}
@@ -526,9 +633,9 @@ func (s *Server) putLayout(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// PUT /v1/flows/{flow_id}/team {"team": "emi"} — give a flow to a team.
-func (s *Server) setTeam(w http.ResponseWriter, r *http.Request) {
-	if !requireAdmin(w, r, "move flows between teams") {
+// PUT /v1/flows/{flow_id}/workspace {"workspace": "emi"} — move a flow to another workspace.
+func (s *Server) setWorkspace(w http.ResponseWriter, r *http.Request) {
+	if !requireAdmin(w, r, "move flows between workspaces") {
 		return
 	}
 	id, ok := flowID(w, r)
@@ -540,13 +647,13 @@ func (s *Server) setTeam(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Team string `json:"team"`
+		Workspace string `json:"workspace"`
 	}
-	if err := json.Unmarshal(body, &req); err != nil || !teamRE.MatchString(req.Team) {
-		writeError(w, http.StatusBadRequest, `body must be {"team": "<name>"} with a lower-case team name`)
+	if err := json.Unmarshal(body, &req); err != nil || !workspaceRE.MatchString(req.Workspace) {
+		writeError(w, http.StatusBadRequest, `body must be {"workspace": "<id>"} with a lower-case workspace id`)
 		return
 	}
-	if err := s.Store.SetTeam(r.Context(), id, req.Team, actor(r)); err != nil {
+	if err := s.Store.SetWorkspace(r.Context(), id, req.Workspace, actor(r)); err != nil {
 		s.fail(w, err)
 		return
 	}
@@ -559,7 +666,7 @@ func (s *Server) setTeam(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) listVersions(w http.ResponseWriter, r *http.Request) {
-	f, ok := s.flowFor(w, r, auth.RoleViewer)
+	f, ok := s.flowFor(w, r, toView)
 	if !ok {
 		return
 	}
@@ -572,7 +679,7 @@ func (s *Server) listVersions(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) getVersion(w http.ResponseWriter, r *http.Request) {
-	f, ok := s.flowFor(w, r, auth.RoleViewer)
+	f, ok := s.flowFor(w, r, toView)
 	if !ok {
 		return
 	}

@@ -28,8 +28,14 @@ func TestValidTokenGivesRolesAndTeams(t *testing.T) {
 	if p.Email != "asha@demo.corp" || strings.Join(p.Roles, ",") != "flow-editor,viewer" || strings.Join(p.Teams, ",") != "emi" {
 		t.Fatalf("got %+v", p)
 	}
-	if !p.Can(RoleEditor, "emi") || p.Can(RolePublisher, "emi") || p.Can(RoleEditor, "complaints") || p.IsAdmin() {
+	// Directory teams grant nothing by themselves: access comes from workspace
+	// memberships, which the API loads from the database.
+	if p.Sees("emi") || p.CanEdit("emi") || p.IsAdmin() {
 		t.Fatalf("permissions wrong for %+v", p)
+	}
+	p.Workspaces = []Membership{{WorkspaceID: "emi", Maker: true}}
+	if !p.Sees("emi") || !p.CanEdit("emi") || p.CanApprove("emi") || p.Owns("emi") || p.Sees("complaints") {
+		t.Fatalf("membership permissions wrong for %+v", p)
 	}
 }
 
@@ -87,7 +93,7 @@ func TestKeysAreCachedAndRefetchedForANewKey(t *testing.T) {
 
 func TestScriptAdmin(t *testing.T) {
 	p := ScriptAdmin()
-	if !p.Can(RolePublisher, "any") || p.Actor() != "admin-token" {
+	if !p.CanApprove("any") || !p.Owns("any") || p.Actor() != "admin-token" {
 		t.Fatalf("%+v", p)
 	}
 }

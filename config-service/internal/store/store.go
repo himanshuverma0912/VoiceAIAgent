@@ -19,6 +19,7 @@ var (
 	ErrNoDraft      = errors.New("this flow has no draft")
 	ErrNotPublished = errors.New("this flow has no published version yet")
 	ErrConflict     = errors.New("someone else saved this flow since you opened it; reload to see their changes")
+	ErrNoWorkspace  = errors.New("there's no such workspace")
 )
 
 // InvalidError is returned by Publish when the draft has problems.
@@ -66,11 +67,20 @@ func withTx(ctx context.Context, db *sql.DB, fn func(*sql.Tx) error) error {
 type FlowSummary struct {
 	FlowID         string     `json:"flow_id"`
 	Name           string     `json:"name"`
-	Team           string     `json:"team"` // "" until a platform admin assigns one (older flows)
+	Workspace      string     `json:"workspace"` // "" until a platform admin assigns one (older flows)
 	LatestVersion  *int       `json:"latest_version"`
 	DraftUpdatedAt *time.Time `json:"draft_updated_at"`
 	DraftValid     *bool      `json:"draft_valid"`
 	Numbers        []string   `json:"numbers"`
+	PendingReview  *ReviewRef `json:"pending_review"` // a submission waiting for a checker, or null
+}
+
+// ReviewRef is the short form of an open review, shown with a flow.
+type ReviewRef struct {
+	ReviewID    int64     `json:"review_id"`
+	SubmittedBy string    `json:"submitted_by"`
+	SubmittedAt time.Time `json:"submitted_at"`
+	Checksum    string    `json:"checksum"` // compare with the draft's: changed since it was submitted?
 }
 
 type Draft struct {
@@ -82,11 +92,11 @@ type Draft struct {
 	UpdatedBy string          `json:"updated_by"`
 }
 
-// SaveDraft stores a draft (valid or not). The first save creates the flow,
-// owned by team; later saves keep the flow's team. If expected is set, the save
+// SaveDraft stores a draft (valid or not). The first save creates the flow in
+// workspace; later saves keep the flow's workspace. If expected is set, the save
 // only happens when the current draft still has that checksum (ErrConflict
 // otherwise), so two people editing at once don't overwrite each other.
-func (s *Store) SaveDraft(ctx context.Context, flowID, name, team string, spec []byte, problems []string, actor, expected string) error {
+func (s *Store) SaveDraft(ctx context.Context, flowID, name, workspace string, spec []byte, problems []string, actor, expected string) error {
 	if problems == nil {
 		problems = []string{}
 	}
@@ -103,14 +113,14 @@ func (s *Store) SaveDraft(ctx context.Context, flowID, name, team string, spec [
 			}
 		}
 		res, err := tx.ExecContext(ctx,
-			`INSERT INTO flows (flow_id, name, team, created_by) VALUES ($1, $2, NULLIF($3, ''), $4)
+			`INSERT INTO flows (flow_id, name, workspace, created_by) VALUES ($1, $2, NULLIF($3, ''), $4)
 			 ON CONFLICT (flow_id) DO NOTHING`,
-			flowID, name, team, actor)
+			flowID, name, workspace, actor)
 		if err != nil {
 			return err
 		}
 		if created, _ := res.RowsAffected(); created == 1 {
-			if err := audit(ctx, tx, actor, "flow.create", flowID, map[string]any{"name": name, "team": team}); err != nil {
+			if err := audit(ctx, tx, actor, "flow.create", flowID, map[string]any{"name": name, "workspace": workspace}); err != nil {
 				return err
 			}
 		} else if _, err := tx.ExecContext(ctx, `UPDATE flows SET name = $2 WHERE flow_id = $1`, flowID, name); err != nil {
@@ -156,12 +166,15 @@ func (s *Store) GetDraft(ctx context.Context, flowID string) (*Draft, error) {
 }
 
 const flowSummarySQL = `
-	SELECT f.flow_id, f.name, COALESCE(f.team, ''),
+	SELECT f.flow_id, f.name, COALESCE(f.workspace, ''),
 	       (SELECT max(version) FROM flow_versions v WHERE v.flow_id = f.flow_id),
 	       d.updated_at,
 	       CASE WHEN d.flow_id IS NULL THEN NULL ELSE json_array_length(d.problems) = 0 END,
-	       COALESCE((SELECT array_agg(number ORDER BY number) FROM phone_numbers p WHERE p.flow_id = f.flow_id), '{}')
-	FROM flows f LEFT JOIN flow_drafts d ON d.flow_id = f.flow_id`
+	       COALESCE((SELECT array_agg(number ORDER BY number) FROM phone_numbers p WHERE p.flow_id = f.flow_id), '{}'),
+	       r.review_id, r.submitted_by, r.submitted_at, r.checksum
+	FROM flows f
+	LEFT JOIN flow_drafts d ON d.flow_id = f.flow_id
+	LEFT JOIN flow_reviews r ON r.flow_id = f.flow_id AND r.status = 'pending'`
 
 func scanSummary(row interface{ Scan(...any) error }) (FlowSummary, error) {
 	var f FlowSummary
@@ -169,8 +182,15 @@ func scanSummary(row interface{ Scan(...any) error }) (FlowSummary, error) {
 	var updated sql.NullTime
 	var valid sql.NullBool
 	var numbers pq.StringArray
-	if err := row.Scan(&f.FlowID, &f.Name, &f.Team, &latest, &updated, &valid, &numbers); err != nil {
+	var reviewID sql.NullInt64
+	var reviewBy, reviewChecksum sql.NullString
+	var reviewAt sql.NullTime
+	if err := row.Scan(&f.FlowID, &f.Name, &f.Workspace, &latest, &updated, &valid, &numbers,
+		&reviewID, &reviewBy, &reviewAt, &reviewChecksum); err != nil {
 		return f, err
+	}
+	if reviewID.Valid {
+		f.PendingReview = &ReviewRef{ReviewID: reviewID.Int64, SubmittedBy: reviewBy.String, SubmittedAt: reviewAt.Time, Checksum: reviewChecksum.String}
 	}
 	if latest.Valid {
 		v := int(latest.Int64)
@@ -186,11 +206,12 @@ func scanSummary(row interface{ Scan(...any) error }) (FlowSummary, error) {
 	return f, nil
 }
 
-// ListFlows returns the flows of the given teams, or every flow if teams is nil.
-func (s *Store) ListFlows(ctx context.Context, teams []string) ([]FlowSummary, error) {
+// ListFlows returns the flows of the given workspaces, or every flow if
+// workspaces is nil.
+func (s *Store) ListFlows(ctx context.Context, workspaces []string) ([]FlowSummary, error) {
 	query, args := flowSummarySQL+` ORDER BY f.flow_id`, []any{}
-	if teams != nil {
-		query, args = flowSummarySQL+` WHERE f.team = ANY($1) ORDER BY f.flow_id`, []any{pq.StringArray(teams)}
+	if workspaces != nil {
+		query, args = flowSummarySQL+` WHERE f.workspace = ANY($1) ORDER BY f.flow_id`, []any{pq.StringArray(workspaces)}
 	}
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -237,21 +258,29 @@ func (s *Store) SetLayout(ctx context.Context, flowID string, layout []byte) err
 	return nil
 }
 
-// SetTeam gives a flow to a team (platform admins only; checked by the API).
-func (s *Store) SetTeam(ctx context.Context, flowID, team, actor string) error {
+// SetWorkspace moves a flow to another workspace (platform admins only;
+// checked by the API). The workspace must exist.
+func (s *Store) SetWorkspace(ctx context.Context, flowID, workspace, actor string) error {
 	return withTx(ctx, s.db, func(tx *sql.Tx) error {
 		var old sql.NullString
-		err := tx.QueryRowContext(ctx, `SELECT team FROM flows WHERE flow_id = $1 FOR UPDATE`, flowID).Scan(&old)
+		err := tx.QueryRowContext(ctx, `SELECT workspace FROM flows WHERE flow_id = $1 FOR UPDATE`, flowID).Scan(&old)
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrNotFound
 		}
 		if err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE flows SET team = $2 WHERE flow_id = $1`, flowID, team); err != nil {
+		var exists bool
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM workspaces WHERE workspace_id = $1)`, workspace).Scan(&exists); err != nil {
 			return err
 		}
-		return audit(ctx, tx, actor, "flow.team", flowID, map[string]any{"from": old.String, "to": team})
+		if !exists {
+			return ErrNoWorkspace
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE flows SET workspace = $2 WHERE flow_id = $1`, flowID, workspace); err != nil {
+			return err
+		}
+		return audit(ctx, tx, actor, "flow.workspace", flowID, map[string]any{"from": old.String, "to": workspace})
 	})
 }
 
@@ -262,56 +291,94 @@ type Version struct {
 	Version     int             `json:"version"`
 	Checksum    string          `json:"checksum"`
 	PublishedAt time.Time       `json:"published_at"`
-	PublishedBy string          `json:"published_by"`
+	PublishedBy string          `json:"published_by"` // the checker who approved it (or the script)
+	SubmittedBy string          `json:"submitted_by"` // the maker who submitted it ("" if published directly)
 	Spec        json.RawMessage `json:"spec,omitempty"`
 }
 
-// Publish turns the current draft into a new version. validate re-checks the
-// draft (the rules may be newer than when it was saved); an invalid draft
-// returns *InvalidError. If the draft equals the latest version, that version
-// is returned with unchanged = true and nothing is written.
+// Publish turns the current draft into a new version directly, without a
+// review (only scripts with ADMIN_TOKEN may; the API checks that). validate
+// re-checks the draft (the rules may be newer than when it was saved); an
+// invalid draft returns *InvalidError. If the draft equals the latest version,
+// that version is returned with unchanged = true and nothing is written.
 func (s *Store) Publish(ctx context.Context, flowID, actor string, validate func([]byte) []string) (v *Version, unchanged bool, err error) {
 	err = withTx(ctx, s.db, func(tx *sql.Tx) error {
-		var spec string
-		// FOR UPDATE: two publishes of the same flow at once get different numbers.
-		err := tx.QueryRowContext(ctx,
-			`SELECT d.spec FROM flows f LEFT JOIN flow_drafts d USING (flow_id) WHERE f.flow_id = $1 FOR UPDATE OF f`,
-			flowID).Scan(&sqlNullString{&spec})
-		if errors.Is(err, sql.ErrNoRows) {
-			return ErrNotFound
-		}
+		spec, err := lockDraft(ctx, tx, flowID)
 		if err != nil {
 			return err
-		}
-		if spec == "" {
-			return ErrNoDraft
 		}
 		if problems := validate([]byte(spec)); len(problems) > 0 {
 			return &InvalidError{Problems: problems}
 		}
-		checksum := Checksum([]byte(spec))
-		latest := &Version{FlowID: flowID}
-		err = tx.QueryRowContext(ctx, `
-			SELECT version, checksum, published_at, published_by FROM flow_versions
-			WHERE flow_id = $1 ORDER BY version DESC LIMIT 1`, flowID,
-		).Scan(&latest.Version, &latest.Checksum, &latest.PublishedAt, &latest.PublishedBy)
-		switch {
-		case err == nil && latest.Checksum == checksum:
-			v, unchanged = latest, true
-			return nil
-		case err != nil && !errors.Is(err, sql.ErrNoRows):
-			return err
-		}
-		v = &Version{FlowID: flowID, Version: latest.Version + 1, Checksum: checksum, PublishedBy: actor}
-		if err := tx.QueryRowContext(ctx, `
-			INSERT INTO flow_versions (flow_id, version, spec, checksum, published_by)
-			VALUES ($1, $2, $3, $4, $5) RETURNING published_at`,
-			flowID, v.Version, spec, checksum, actor).Scan(&v.PublishedAt); err != nil {
-			return err
-		}
-		return audit(ctx, tx, actor, "flow.publish", flowID, map[string]any{"version": v.Version, "checksum": checksum})
+		v, unchanged, err = publishSpec(ctx, tx, flowID, spec, actor, "", 0)
+		return err
 	})
 	return v, unchanged, err
+}
+
+// lockDraft locks the flow (so two publishes get different numbers) and
+// returns its draft.
+func lockDraft(ctx context.Context, tx *sql.Tx, flowID string) (string, error) {
+	var spec string
+	err := tx.QueryRowContext(ctx,
+		`SELECT d.spec FROM flows f LEFT JOIN flow_drafts d USING (flow_id) WHERE f.flow_id = $1 FOR UPDATE OF f`,
+		flowID).Scan(&sqlNullString{&spec})
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	if err != nil {
+		return "", err
+	}
+	if spec == "" {
+		return "", ErrNoDraft
+	}
+	return spec, nil
+}
+
+func latestVersion(ctx context.Context, tx *sql.Tx, flowID string) (*Version, error) {
+	latest := &Version{FlowID: flowID}
+	err := tx.QueryRowContext(ctx, `
+		SELECT version, checksum, published_at, published_by, COALESCE(submitted_by, '') FROM flow_versions
+		WHERE flow_id = $1 ORDER BY version DESC LIMIT 1`, flowID,
+	).Scan(&latest.Version, &latest.Checksum, &latest.PublishedAt, &latest.PublishedBy, &latest.SubmittedBy)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	return latest, err
+}
+
+// publishSpec stores spec as the next version, inside tx (the flow row must
+// already be locked). submittedBy and reviewID are set when it comes from an
+// approved review.
+func publishSpec(ctx context.Context, tx *sql.Tx, flowID, spec, actor, submittedBy string, reviewID int64) (*Version, bool, error) {
+	checksum := Checksum([]byte(spec))
+	latest, err := latestVersion(ctx, tx, flowID)
+	if err != nil {
+		return nil, false, err
+	}
+	if latest != nil && latest.Checksum == checksum {
+		return latest, true, nil
+	}
+	next := 1
+	if latest != nil {
+		next = latest.Version + 1
+	}
+	v := &Version{FlowID: flowID, Version: next, Checksum: checksum, PublishedBy: actor, SubmittedBy: submittedBy}
+	var review sql.NullInt64
+	if reviewID > 0 {
+		review = sql.NullInt64{Int64: reviewID, Valid: true}
+	}
+	if err := tx.QueryRowContext(ctx, `
+		INSERT INTO flow_versions (flow_id, version, spec, checksum, published_by, submitted_by, review_id)
+		VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''), $7) RETURNING published_at`,
+		flowID, v.Version, spec, checksum, actor, submittedBy, review).Scan(&v.PublishedAt); err != nil {
+		return nil, false, err
+	}
+	detail := map[string]any{"version": v.Version, "checksum": checksum}
+	if reviewID > 0 {
+		detail["review_id"], detail["submitted_by"] = reviewID, submittedBy
+	}
+	return v, false, audit(ctx, tx, actor, "flow.publish", flowID, detail)
 }
 
 // sqlNullString scans a nullable text column into a string ("" for NULL).
@@ -336,7 +403,7 @@ func (s *Store) ListVersions(ctx context.Context, flowID string) ([]Version, err
 		return nil, err
 	}
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT version, checksum, published_at, published_by FROM flow_versions
+		SELECT version, checksum, published_at, published_by, COALESCE(submitted_by, '') FROM flow_versions
 		WHERE flow_id = $1 ORDER BY version DESC`, flowID)
 	if err != nil {
 		return nil, err
@@ -345,7 +412,7 @@ func (s *Store) ListVersions(ctx context.Context, flowID string) ([]Version, err
 	out := []Version{}
 	for rows.Next() {
 		v := Version{FlowID: flowID}
-		if err := rows.Scan(&v.Version, &v.Checksum, &v.PublishedAt, &v.PublishedBy); err != nil {
+		if err := rows.Scan(&v.Version, &v.Checksum, &v.PublishedAt, &v.PublishedBy, &v.SubmittedBy); err != nil {
 			return nil, err
 		}
 		out = append(out, v)
@@ -357,9 +424,9 @@ func (s *Store) GetVersion(ctx context.Context, flowID string, version int) (*Ve
 	v := Version{FlowID: flowID, Version: version}
 	var spec string
 	err := s.db.QueryRowContext(ctx, `
-		SELECT checksum, published_at, published_by, spec FROM flow_versions
+		SELECT checksum, published_at, published_by, COALESCE(submitted_by, ''), spec FROM flow_versions
 		WHERE flow_id = $1 AND version = $2`, flowID, version,
-	).Scan(&v.Checksum, &v.PublishedAt, &v.PublishedBy, &spec)
+	).Scan(&v.Checksum, &v.PublishedAt, &v.PublishedBy, &v.SubmittedBy, &spec)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}

@@ -75,11 +75,11 @@ func TestModelCatalog(t *testing.T) {
 	if len(list) != 4 {
 		t.Fatalf("seeded catalog: %s", toJSON(list))
 	}
-	c.json("PUT", "/v1/flows/emi_payment_issue/draft?team=emi", asha, spec(t, "emi-payment-issue.json"), 200)
-	c.json("PUT", "/v1/flows/complaint_helpline/draft?team=complaints", ravi, spec(t, "complaint-helpline.json"), 200)
+	c.json("PUT", "/v1/flows/emi_payment_issue/draft?workspace=emi", asha, spec(t, "emi-payment-issue.json"), 200)
+	c.json("PUT", "/v1/flows/complaint_helpline/draft?workspace=complaints", ravi, spec(t, "complaint-helpline.json"), 200)
 
 	// Only platform admins change it, and entries are checked.
-	smart := []byte(`{"label": "Voice smart", "notes": "Better reasoning, slower and costlier.", "teams": ["emi"]}`)
+	smart := []byte(`{"label": "Voice smart", "notes": "Better reasoning, slower and costlier.", "workspaces": ["emi"]}`)
 	c.json("PUT", "/v1/catalog/llm/voice-smart", asha, smart, 403)
 	c.json("PUT", "/v1/catalog/llm/voice-smart", admin, []byte(`{"label": "x", "price": 3}`), 400)
 	c.json("PUT", "/v1/catalog/llm/voice-smart", admin, []byte(`{"label": "", "languages": ["hindi"]}`), 422)
@@ -110,10 +110,10 @@ func TestModelCatalog(t *testing.T) {
 		t.Fatalf("emi with voice-smart: %v", res)
 	}
 	res := c.json("PUT", "/v1/flows/complaint_helpline/draft", ravi, withSettings(t, "complaint-helpline.json", map[string]any{"llm_model": "voice-smart"}), 200)
-	if !strings.Contains(problemsOf(res), "isn't offered to team complaints") {
+	if !strings.Contains(problemsOf(res), "isn't offered to workspace complaints") {
 		t.Fatalf("complaints with voice-smart: %v", res)
 	}
-	c.json("POST", "/v1/flows/complaint_helpline/publish", ravi, nil, 422)
+	c.json("POST", "/v1/flows/complaint_helpline/reviews", ravi, nil, 422) // can't even be submitted
 	res = c.json("PUT", "/v1/flows/complaint_helpline/draft", ravi, withSettings(t, "complaint-helpline.json", map[string]any{"llm_model": "gpt-9", "tts_voice_id": "made-up-voice"}), 200)
 	if p := problemsOf(res); !strings.Contains(p, "settings.llm_model: 'gpt-9' isn't in the model catalog") || !strings.Contains(p, "settings.tts_voice_id: 'made-up-voice' isn't in the model catalog") {
 		t.Fatalf("unknown models: %v", p)
@@ -122,12 +122,12 @@ func TestModelCatalog(t *testing.T) {
 	if res := c.json("PUT", "/v1/flows/complaint_helpline/draft", ravi, withSettings(t, "complaint-helpline.json", map[string]any{"llm_model": nil}), 200); res["valid"] != true {
 		t.Fatalf("defaults: %v", res)
 	}
-	// Checking as you type uses the flow's team.
+	// Checking as you type uses the flow's workspace.
 	body := withSettings(t, "complaint-helpline.json", map[string]any{"llm_model": "voice-smart"})
-	if res := c.json("POST", "/v1/validate?team=complaints", ravi, body, 200); res["valid"] != false {
+	if res := c.json("POST", "/v1/validate?workspace=complaints", ravi, body, 200); res["valid"] != false {
 		t.Fatalf("validate as complaints: %v", res)
 	}
-	if res := c.json("POST", "/v1/validate?team=emi", asha, withSettings(t, "emi-payment-issue.json", map[string]any{"llm_model": "voice-smart"}), 200); res["valid"] != true {
+	if res := c.json("POST", "/v1/validate?workspace=emi", asha, withSettings(t, "emi-payment-issue.json", map[string]any{"llm_model": "voice-smart"}), 200); res["valid"] != true {
 		t.Fatalf("validate as emi: %v", res)
 	}
 
@@ -140,14 +140,14 @@ func TestModelCatalog(t *testing.T) {
 
 	// Back to voice-smart, then publish it.
 	c.json("PUT", "/v1/flows/emi_payment_issue/draft", asha, withSettings(t, "emi-payment-issue.json", map[string]any{"llm_model": "voice-smart"}), 200)
-	c.json("POST", "/v1/flows/emi_payment_issue/publish", asha, nil, 201)
+	c.json("POST", "/v1/flows/emi_payment_issue/publish", adminToken, nil, 201)
 
 	// In use: can't be deleted, but can be switched off.
 	res = c.json("DELETE", "/v1/catalog/llm/voice-smart", admin, nil, 409)
 	if toJSON(res["used_by"]) != `["emi_payment_issue"]` {
 		t.Fatalf("used by: %v", res)
 	}
-	off := []byte(`{"label": "Voice smart", "teams": ["emi"], "enabled": false}`)
+	off := []byte(`{"label": "Voice smart", "workspaces": ["emi"], "enabled": false}`)
 	if res := c.json("PUT", "/v1/catalog/llm/voice-smart", admin, off, 200); toJSON(res["used_by"]) != `["emi_payment_issue"]` {
 		t.Fatalf("switch off: %v", res)
 	}
@@ -161,7 +161,8 @@ func TestModelCatalog(t *testing.T) {
 		t.Fatalf("ravi sees %s", got)
 	}
 	// The published version keeps running; the draft can't be published again until it's changed.
-	if res := c.json("POST", "/v1/flows/emi_payment_issue/publish", asha, nil, 422); !strings.Contains(problemsOf(res), "switched off") {
+	c.json("POST", "/v1/flows/emi_payment_issue/reviews", asha, nil, 422)
+	if res := c.json("POST", "/v1/flows/emi_payment_issue/publish", adminToken, nil, 422); !strings.Contains(problemsOf(res), "switched off") {
 		t.Fatalf("publish after switch off: %v", res)
 	}
 	c.json("GET", "/internal/v1/flows/emi_payment_issue/draft", runtimeToken, nil, 422) // a test call won't start either
@@ -172,7 +173,7 @@ func TestModelCatalog(t *testing.T) {
 
 	// Switched to the default and republished, nothing uses it: it can go.
 	c.json("PUT", "/v1/flows/emi_payment_issue/draft", asha, spec(t, "emi-payment-issue.json"), 200)
-	c.json("POST", "/v1/flows/emi_payment_issue/publish", asha, nil, 201)
+	c.json("POST", "/v1/flows/emi_payment_issue/publish", adminToken, nil, 201)
 	c.json("DELETE", "/v1/catalog/llm/voice-smart", admin, nil, 0)
 	c.json("DELETE", "/v1/catalog/llm/voice-smart", admin, nil, 404)
 

@@ -2,12 +2,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiError, api, can, type CatalogEntry, type FlowSummary, type Me } from "../api";
 import { Canvas, type Selection } from "../components/Canvas";
 import { NodeEditor } from "../components/NodeEditor";
-import { PublishDialog, VersionsDialog } from "../components/Review";
+import { ReviewDialog, SubmitDialog, VersionsDialog } from "../components/Review";
 import { SettingsEditor } from "../components/SettingsEditor";
 import { TestCall } from "../components/TestCall";
-import { toast } from "../components/ui";
+import { timeAgo, toast } from "../components/ui";
 import { NODE_WIDTH, autoLayout, positionsFor, type Positions } from "../layout";
 import { Link, navigate, setLeaveGuard } from "../router";
+import { workspaceNames } from "./FlowList";
 import {
   NODE_TYPE_LABEL,
   clone,
@@ -42,7 +43,7 @@ export function FlowEditor({ me, flowId }: { me: Me; flowId: string }) {
   const [selection, setSelection] = useState<Selection>({ kind: "settings" });
   const [saving, setSaving] = useState(false);
   const [conflict, setConflict] = useState(false);
-  const [dialog, setDialog] = useState<null | "publish" | "versions">(null);
+  const [dialog, setDialog] = useState<null | "submit" | "review" | "versions">(null);
   const [testing, setTesting] = useState(false);
   const [activeNode, setActiveNode] = useState<string | null>(null);
   const [catalog, setCatalog] = useState<CatalogEntry[] | null>(null);
@@ -65,12 +66,15 @@ export function FlowEditor({ me, flowId }: { me: Me; flowId: string }) {
           setJsonText(serialize(d.spec));
         }
       },
-      (e) => setLoadError(e instanceof ApiError && e.status === 404 ? "This flow doesn't exist, or it belongs to another team." : (e as Error).message),
+      (e) => setLoadError(e instanceof ApiError && e.status === 404 ? "This flow doesn't exist, or it's in a workspace you aren't in." : (e as Error).message),
     );
   }, [flowId]);
 
-  const editable = !!summary && can.edit(me, summary.team);
-  const publishable = !!summary && can.publish(me, summary.team);
+  const editable = !!summary && can.edit(me, summary.workspace);
+  const checker = !!summary && can.approve(me, summary.workspace);
+  const pending = summary?.pending_review ?? null;
+  const mySubmission = !!pending && pending.submitted_by === me.email;
+  const canDecide = !!pending && checker && !mySubmission;
   const flow = isEditable(spec) ? spec : null;
   const unsaved = dirty || layoutDirty;
 
@@ -95,14 +99,14 @@ export function FlowEditor({ me, flowId }: { me: Me; flowId: string }) {
     const seq = ++checkSeq.current;
     const timer = setTimeout(async () => {
       try {
-        const res = await api.validate(text, summary?.team || undefined);
+        const res = await api.validate(text, summary?.workspace || undefined);
         if (seq === checkSeq.current) setProblems(res.problems);
       } catch (e) {
         if (seq === checkSeq.current) setProblems([`(top level): ${(e as Error).message}`]);
       }
     }, 450);
     return () => clearTimeout(timer);
-  }, [spec, jsonText, mode, dirty, summary?.team]);
+  }, [spec, jsonText, mode, dirty, summary?.workspace]);
 
   // ── editing ──
   /** Change the flow in place: fn gets a copy to modify (its return value is ignored). */
@@ -266,10 +270,13 @@ export function FlowEditor({ me, flowId }: { me: Me; flowId: string }) {
     setTesting(true);
   };
 
-  const openPublish = async () => {
+  const openSubmit = async () => {
     if (unsaved && !(await save())) return;
-    setDialog("publish");
+    setDialog("submit");
   };
+
+  /** After a review is decided or withdrawn: fetch the flow's state again. */
+  const refreshSummary = () => api.flow(flowId).then(setSummary, () => {});
 
   // ── derived ──
   const grouped = useMemo(() => groupProblems(problems, flow ? Object.keys(flow.nodes) : []), [problems, flow]);
@@ -296,7 +303,7 @@ export function FlowEditor({ me, flowId }: { me: Me; flowId: string }) {
         <div className="title">
           <strong>{flow?.name || summary.name}</strong>
           <span className="faint mono">
-            {flowId} · team {summary.team || "unassigned"}
+            {flowId} · {workspaceNames(me)[summary.workspace] ?? summary.workspace}
             <span style={{ fontFamily: "system-ui, sans-serif" }}>
               {" · "}
               {saving ? "saving…" : unsaved ? "unsaved changes" : editable ? "saved" : "view only"}
@@ -359,28 +366,49 @@ export function FlowEditor({ me, flowId }: { me: Me; flowId: string }) {
         <button onClick={() => navigate(`/flows/${flowId}/calls`)} title="How calls on this flow went">
           Calls
         </button>
-        {(editable || publishable) && (
-          <button onClick={startTest} disabled={testing || saving} title="Talk to this draft from your browser (up to 5 minutes)">
-            🎙 Test call
-          </button>
-        )}
-        {editable && (
-          <button className={unsaved && !publishable ? "primary" : ""} disabled={!unsaved || saving} onClick={save} title="Ctrl/⌘ + S">
-            Save
-          </button>
-        )}
-        {publishable && (
-          <button className="primary" onClick={openPublish} disabled={saving}>
-            Review & publish
-          </button>
-        )}
+        <div className="bar-actions">
+          {(editable || checker) && (
+            <button onClick={startTest} disabled={testing || saving} title="Talk to this draft from your browser (up to 5 minutes)">
+              🎙 Test call
+            </button>
+          )}
+          {editable && (
+            <button className={unsaved ? "primary" : ""} disabled={!unsaved || saving} onClick={save} title="Ctrl/⌘ + S">
+              Save
+            </button>
+          )}
+          {editable && (
+            <button className={unsaved || canDecide ? "" : "primary"} onClick={openSubmit} disabled={saving} title="Send the saved draft to a checker">
+              Submit for review
+            </button>
+          )}
+          {canDecide && (
+            <button className="primary" onClick={() => setDialog("review")}>
+              Review
+            </button>
+          )}
+        </div>
       </div>
+      {pending && (
+        <div className="pending-banner" role="status">
+          <span className="grow">
+            {mySubmission ? "You" : pending.submitted_by} submitted this flow for review {timeAgo(pending.submitted_at)}.{" "}
+            {canDecide
+              ? "It's waiting for you or another checker."
+              : mySubmission
+                ? "Someone else has to approve it."
+                : "It's waiting for a checker."}
+            {checksum && checksum !== pending.checksum && " The draft has changed since; the checker sees the submitted version, not these changes."}
+          </span>
+          <button onClick={() => setDialog("review")}>{canDecide ? "Review it" : "See submission"}</button>
+        </div>
+      )}
 
       <div className="editor-body">
         <div className="canvas">
           {!editable && (
             <div className="notice info" style={{ position: "absolute", zIndex: 5, top: 10, left: 10, right: 10 }}>
-              View only. Editing needs the flow-editor role in team {summary.team || "(unassigned: platform admins only)"}.
+              View only. Editing needs the maker role in this workspace{checker ? "; as a checker you review submitted changes" : ""}.
             </div>
           )}
           {conflict && (
@@ -469,7 +497,7 @@ export function FlowEditor({ me, flowId }: { me: Me; flowId: string }) {
           ) : flow ? (
             <SettingsEditor
               flow={flow}
-              team={summary.team}
+              workspace={summary.workspace}
               catalog={catalog}
               editable={editable}
               problems={grouped.general}
@@ -481,17 +509,45 @@ export function FlowEditor({ me, flowId }: { me: Me; flowId: string }) {
         </aside>
       </div>
 
-      {dialog === "publish" && (
-        <PublishDialog
+      {dialog === "submit" && (
+        <SubmitDialog
           flowId={flowId}
           spec={spec}
           latestVersion={summary.latest_version}
           problems={problems}
+          pending={pending}
           onClose={() => setDialog(null)}
-          onPublished={(version) => {
-            setSummary((s) => (s ? { ...s, latest_version: version } : s));
+          onSubmitted={(review) => {
+            setSummary((s) =>
+              s
+                ? {
+                    ...s,
+                    pending_review: {
+                      review_id: review.review_id,
+                      submitted_by: review.submitted_by,
+                      submitted_at: review.submitted_at,
+                      checksum: review.checksum,
+                    },
+                  }
+                : s,
+            );
             setDialog(null);
-            toast(`Published v${version}. Calls use it from their next call.`);
+            toast("Submitted. A checker in this workspace approves it to make it live.");
+          }}
+        />
+      )}
+      {dialog === "review" && pending && (
+        <ReviewDialog
+          me={me}
+          flowId={flowId}
+          workspace={summary.workspace}
+          reviewId={pending.review_id}
+          latestVersion={summary.latest_version}
+          onClose={() => setDialog(null)}
+          onDecided={(message) => {
+            setDialog(null);
+            toast(message);
+            refreshSummary();
           }}
         />
       )}
@@ -513,7 +569,7 @@ export function FlowEditor({ me, flowId }: { me: Me; flowId: string }) {
             }
             setSelection({ kind: "settings" });
             setDialog(null);
-            toast(`v${version} copied into the draft. Save, then publish to make it live.`);
+            toast(`v${version} copied into the draft. Save, then submit it for review to make it live.`);
           }}
         />
       )}

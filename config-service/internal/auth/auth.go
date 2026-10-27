@@ -4,7 +4,11 @@
 // access token (a JWT signed by Keycloak). This package checks that token:
 // the signature against Keycloak's published keys (JWKS), the issuer, the
 // audience ("config-api"), and that it hasn't expired. Then it reads the
-// person's roles and teams from it.
+// person's email and global roles from it.
+//
+// What a person may do with flows comes from their workspace memberships,
+// which are kept in the config service's database (managed in Flow Studio),
+// not in Keycloak. The API loads them into Principal.Workspaces per request.
 //
 // Scripts and CI keep using ADMIN_TOKEN, which acts as a platform admin.
 package auth
@@ -26,7 +30,10 @@ import (
 	"time"
 )
 
-// Roles, as defined in Keycloak's voice-platform realm.
+// Roles, as defined in Keycloak's voice-platform realm. Only platform-admin
+// still grants anything by itself; flow-editor and flow-publisher (with the
+// /teams/<name> groups) are read once, to give a person their first workspace
+// memberships (maker and checker) when they first sign in.
 const (
 	RoleViewer        = "viewer"
 	RoleEditor        = "flow-editor"
@@ -34,19 +41,36 @@ const (
 	RolePlatformAdmin = "platform-admin"
 )
 
+// Membership is a person's place in one workspace. Everyone in a workspace can
+// see its flows; makers edit drafts and submit them for review; checkers
+// approve (publish) or reject other people's submissions; owners manage who's
+// in the workspace.
+type Membership struct {
+	WorkspaceID string `json:"workspace_id"`
+	Name        string `json:"name"`
+	Maker       bool   `json:"maker"`
+	Checker     bool   `json:"checker"`
+	Owner       bool   `json:"owner"`
+}
+
 // Principal is the person (or script) making a request.
 type Principal struct {
 	Subject string   `json:"subject"`
 	Email   string   `json:"email"`
 	Name    string   `json:"name"`
 	Roles   []string `json:"roles"` // only the platform's roles, sorted
-	Teams   []string `json:"teams"` // from Keycloak groups /teams/<name>, sorted
 	Script  bool     `json:"script"`
+
+	// Filled in by the API from the database, for each request.
+	Workspaces []Membership `json:"workspaces"`
+
+	// Directory groups /teams/<name>, only used for the first-sign-in import.
+	Teams []string `json:"-"`
 }
 
 // ScriptAdmin is who ADMIN_TOKEN requests run as.
 func ScriptAdmin() Principal {
-	return Principal{Subject: "admin-token", Name: "admin token (scripts)", Roles: []string{RolePlatformAdmin}, Teams: []string{}, Script: true}
+	return Principal{Subject: "admin-token", Name: "admin token (scripts)", Roles: []string{RolePlatformAdmin}, Teams: []string{}, Workspaces: []Membership{}, Script: true}
 }
 
 func (p Principal) HasRole(role string) bool {
@@ -60,22 +84,48 @@ func (p Principal) HasRole(role string) bool {
 
 func (p Principal) IsAdmin() bool { return p.HasRole(RolePlatformAdmin) }
 
-func (p Principal) InTeam(team string) bool {
-	for _, t := range p.Teams {
-		if t == team {
-			return true
+// Member returns p's membership of workspace ws.
+func (p Principal) Member(ws string) (Membership, bool) {
+	for _, m := range p.Workspaces {
+		if m.WorkspaceID == ws && ws != "" {
+			return m, true
 		}
 	}
-	return false
+	return Membership{}, false
 }
 
-// Can reports whether p may act with role on a flow owned by team.
-// Platform admins can do everything; others need the role and the team.
-func (p Principal) Can(role, team string) bool {
-	if p.IsAdmin() {
-		return true
+// Sees: may see the workspace's flows. Platform admins see every workspace.
+func (p Principal) Sees(ws string) bool {
+	_, ok := p.Member(ws)
+	return ok || p.IsAdmin()
+}
+
+// CanEdit: may edit drafts and submit them for review (maker).
+func (p Principal) CanEdit(ws string) bool {
+	m, _ := p.Member(ws)
+	return m.Maker || p.IsAdmin()
+}
+
+// CanApprove: may approve or reject submissions (checker). Nobody may approve
+// their own submission; the API checks that separately.
+func (p Principal) CanApprove(ws string) bool {
+	m, _ := p.Member(ws)
+	return m.Checker || p.IsAdmin()
+}
+
+// Owns: may manage the workspace's members.
+func (p Principal) Owns(ws string) bool {
+	m, _ := p.Member(ws)
+	return m.Owner || p.IsAdmin()
+}
+
+// WorkspaceIDs lists the workspaces p belongs to.
+func (p Principal) WorkspaceIDs() []string {
+	ids := []string{}
+	for _, m := range p.Workspaces {
+		ids = append(ids, m.WorkspaceID)
 	}
-	return team != "" && p.HasRole(role) && p.InTeam(team)
+	return ids
 }
 
 // Actor is how p appears in the audit log and in "published by".
@@ -167,10 +217,11 @@ func (v *Verifier) Verify(ctx context.Context, raw string) (Principal, error) {
 		return Principal{}, fmt.Errorf("%w: not an access token", errToken)
 	}
 
-	p := Principal{Subject: c.Subject, Email: c.Email, Name: c.Name, Roles: []string{}, Teams: []string{}}
+	p := Principal{Subject: c.Subject, Email: c.Email, Name: c.Name, Roles: []string{}, Teams: []string{}, Workspaces: []Membership{}}
 	if p.Email == "" {
 		p.Email = c.Username
 	}
+	p.Email = strings.ToLower(strings.TrimSpace(p.Email))
 	for _, r := range c.RealmAccess.Roles {
 		switch r {
 		case RoleViewer, RoleEditor, RolePublisher, RolePlatformAdmin:

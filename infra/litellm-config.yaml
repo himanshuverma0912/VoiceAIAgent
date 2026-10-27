@@ -7,6 +7,16 @@ model_list:
       model: openai/gpt-4o-mini
       api_key: os.environ/OPENAI_API_KEY
 
+  # Flow Studio's AI flow builder ("Describe it"): turns a long written
+  # description into a flow. Used only when building flows, never on calls, so
+  # a stronger (slower, costlier) model is fine. gpt-5.6-sol (July 2026);
+  # gpt-6.1-sol is newer. Change it here, then: docker compose up -d litellm
+  - model_name: flow-builder
+    litellm_params:
+      model: openai/gpt-5.6-sol
+      api_key: os.environ/OPENAI_API_KEY
+      timeout: 360
+
 litellm_settings:
   # Don't pass message or response content to any logging callbacks.
   turn_off_message_logging: true

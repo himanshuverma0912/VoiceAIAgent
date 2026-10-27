@@ -15,8 +15,8 @@ import (
 
 // Model catalog: the LLMs (LiteLLM aliases), Deepgram models and Cartesia
 // voices flows may use. Flow Studio shows them as dropdowns; a draft that names
-// anything else, or something switched off or not offered to its team, gets a
-// problem, so it can't be test-called or published. Leaving a setting empty
+// anything else, or something switched off or not offered to its workspace,
+// gets a problem, so it can't be test-called or published. Leaving a setting empty
 // means "the agent's default" and is always allowed.
 
 var (
@@ -29,7 +29,7 @@ var (
 func catalogKinds() []string { return []string{"llm", "stt", "tts_voice"} }
 
 // catalogProblems checks a flow's model settings against the catalog.
-func catalogProblems(entries []store.CatalogEntry, decoded any, team string) []string {
+func catalogProblems(entries []store.CatalogEntry, decoded any, workspace string) []string {
 	root, ok := decoded.(*flowspec.Object)
 	if !ok {
 		return nil
@@ -62,8 +62,8 @@ func catalogProblems(entries []store.CatalogEntry, decoded any, team string) []s
 			problems = append(problems, fmt.Sprintf("%s: '%s' isn't in the model catalog; pick a %s from the list (a platform admin can add more)", loc, value, kindLabel[kind]))
 		case !found.Enabled:
 			problems = append(problems, fmt.Sprintf("%s: '%s' has been switched off in the model catalog; pick another %s", loc, value, kindLabel[kind]))
-		case !found.AllowedFor(team):
-			problems = append(problems, fmt.Sprintf("%s: '%s' isn't offered to team %s; pick another %s", loc, value, orUnassigned(team), kindLabel[kind]))
+		case !found.AllowedFor(workspace):
+			problems = append(problems, fmt.Sprintf("%s: '%s' isn't offered to workspace %s; pick another %s", loc, value, orUnassigned(workspace), kindLabel[kind]))
 		case len(found.Languages) > 0 && language != "multi" && !hasLanguage(found.Languages, language):
 			problems = append(problems, fmt.Sprintf("%s: '%s' supports %s, not this flow's language (%s)", loc, value, strings.Join(found.Languages, ", "), language))
 		}
@@ -71,11 +71,11 @@ func catalogProblems(entries []store.CatalogEntry, decoded any, team string) []s
 	return problems
 }
 
-func orUnassigned(team string) string {
-	if team == "" {
+func orUnassigned(workspace string) string {
+	if workspace == "" {
 		return "(unassigned)"
 	}
-	return team
+	return workspace
 }
 
 func hasLanguage(langs []string, language string) bool {
@@ -88,8 +88,8 @@ func hasLanguage(langs []string, language string) bool {
 	return false
 }
 
-// checkFlow is checkSpec plus the model catalog, for a flow of the given team.
-func (s *Server) checkFlow(ctx context.Context, body []byte, flowID, team string) (any, []string, error) {
+// checkFlow is checkSpec plus the model catalog, for a flow of the given workspace.
+func (s *Server) checkFlow(ctx context.Context, body []byte, flowID, workspace string) (any, []string, error) {
 	decoded, problems, err := checkSpec(body, flowID)
 	if err != nil {
 		return nil, nil, err
@@ -98,11 +98,11 @@ func (s *Server) checkFlow(ctx context.Context, body []byte, flowID, team string
 	if err != nil {
 		return nil, nil, err
 	}
-	return decoded, append(problems, catalogProblems(entries, decoded, team)...), nil
+	return decoded, append(problems, catalogProblems(entries, decoded, workspace)...), nil
 }
 
 // GET /v1/catalog — what Flow Studio offers. People see the entries offered to
-// their teams (switched-off ones too, so Studio can say why a flow's model is
+// their workspaces (switched-off ones too, so Studio can say why a flow's model is
 // no longer allowed); platform admins see everything.
 func (s *Server) listCatalog(w http.ResponseWriter, r *http.Request) {
 	entries, err := s.Store.ListCatalog(r.Context())
@@ -114,9 +114,9 @@ func (s *Server) listCatalog(w http.ResponseWriter, r *http.Request) {
 	if !p.IsAdmin() {
 		visible := []store.CatalogEntry{}
 		for _, e := range entries {
-			ok := len(e.Teams) == 0
-			for _, t := range e.Teams {
-				ok = ok || p.InTeam(t)
+			ok := len(e.Workspaces) == 0
+			for _, ws := range e.Workspaces {
+				ok = ok || p.Sees(ws)
 			}
 			if ok {
 				visible = append(visible, e)
@@ -128,11 +128,11 @@ func (s *Server) listCatalog(w http.ResponseWriter, r *http.Request) {
 }
 
 type catalogInput struct {
-	Label     string   `json:"label"`
-	Notes     string   `json:"notes"`
-	Languages []string `json:"languages"`
-	Teams     []string `json:"teams"`
-	Enabled   *bool    `json:"enabled"`
+	Label      string   `json:"label"`
+	Notes      string   `json:"notes"`
+	Languages  []string `json:"languages"`
+	Workspaces []string `json:"workspaces"`
+	Enabled    *bool    `json:"enabled"`
 }
 
 func catalogPath(w http.ResponseWriter, r *http.Request) (kind, id string, ok bool) {
@@ -165,7 +165,7 @@ func (s *Server) putCatalogEntry(w http.ResponseWriter, r *http.Request) {
 	dec.DisallowUnknownFields()
 	var in catalogInput
 	if err := dec.Decode(&in); err != nil {
-		writeError(w, http.StatusBadRequest, "expected {\"label\", \"notes\", \"languages\", \"teams\", \"enabled\"}: "+err.Error())
+		writeError(w, http.StatusBadRequest, "expected {\"label\", \"notes\", \"languages\", \"workspaces\", \"enabled\"}: "+err.Error())
 		return
 	}
 	in.Label, in.Notes = strings.TrimSpace(in.Label), strings.TrimSpace(in.Notes)
@@ -181,9 +181,9 @@ func (s *Server) putCatalogEntry(w http.ResponseWriter, r *http.Request) {
 			problems = append(problems, fmt.Sprintf("languages: '%s' isn't a language code like hi or en", l))
 		}
 	}
-	for _, t := range in.Teams {
-		if !teamRE.MatchString(t) {
-			problems = append(problems, fmt.Sprintf("teams: '%s' isn't a team name", t))
+	for _, ws := range in.Workspaces {
+		if !workspaceRE.MatchString(ws) {
+			problems = append(problems, fmt.Sprintf("workspaces: '%s' isn't a workspace id", ws))
 		}
 	}
 	if len(problems) > 0 {
@@ -192,7 +192,7 @@ func (s *Server) putCatalogEntry(w http.ResponseWriter, r *http.Request) {
 	}
 	e := store.CatalogEntry{
 		Kind: kind, ModelID: id, Label: in.Label, Notes: in.Notes,
-		Languages: nonNil(in.Languages), Teams: nonNil(in.Teams), Enabled: in.Enabled == nil || *in.Enabled,
+		Languages: nonNil(in.Languages), Workspaces: nonNil(in.Workspaces), Enabled: in.Enabled == nil || *in.Enabled,
 	}
 	created, err := s.Store.PutCatalogEntry(r.Context(), e, actor(r))
 	if err != nil {

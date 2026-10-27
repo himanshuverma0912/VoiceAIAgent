@@ -6,9 +6,11 @@
 #   export CONFIG_ADMIN_TOKEN=...            # from ~/infra/.env
 #   scripts/publish-flow.sh flows/emi-payment-issue.json               # publish only
 #   scripts/publish-flow.sh flows/emi-payment-issue.json +918045678901 # and map the number
-#   TEAM=emi scripts/publish-flow.sh flows/emi-payment-issue.json      # new flow owned by team emi
+#   WORKSPACE=emi scripts/publish-flow.sh flows/emi-payment-issue.json # new flow in workspace emi
+#                                                                      # (created if it doesn't exist)
 #
-# Flow teams normally use Flow Studio; this script is for admins and CI.
+# Teams normally use Flow Studio, where a maker submits and a checker approves.
+# This script publishes directly with ADMIN_TOKEN: for admins and CI only.
 set -euo pipefail
 
 FILE="${1:?usage: publish-flow.sh <flow.json> [phone number]}"
@@ -23,10 +25,20 @@ field() { python3 -c 'import json,sys; v=json.load(sys.stdin).get(sys.argv[1]); 
 FLOW_ID=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["flow_id"])' "$FILE")
 echo "Flow: $FLOW_ID ($FILE)"
 
+# 0. The workspace for a new flow (TEAM= still works, from before workspaces).
+WORKSPACE="${WORKSPACE:-${TEAM:-}}"
+WS_QUERY=""
+if [ -n "$WORKSPACE" ]; then
+  WS_QUERY="?workspace=$WORKSPACE"
+  if [ "$(curl -sS -o /dev/null -w '%{http_code}' "$URL/v1/workspaces/$WORKSPACE/members" -H "$AUTH")" = 404 ]; then
+    curl -sS --fail-with-body -X PUT "$URL/v1/workspaces/$WORKSPACE" -H "$AUTH" \
+      -H "Content-Type: application/json" --data "{\"name\": \"$WORKSPACE\"}" >/dev/null
+    echo "Created workspace $WORKSPACE (rename it and add members in Flow Studio)"
+  fi
+fi
+
 # 1. Save as draft. Problems (if any) are listed and nothing is published.
-TEAM_QUERY=""
-if [ -n "${TEAM:-}" ]; then TEAM_QUERY="?team=$TEAM"; fi
-ANSWER=$(curl -sS --fail-with-body -X PUT "$URL/v1/flows/$FLOW_ID/draft$TEAM_QUERY" -H "$AUTH" \
+ANSWER=$(curl -sS --fail-with-body -X PUT "$URL/v1/flows/$FLOW_ID/draft$WS_QUERY" -H "$AUTH" \
   -H "Content-Type: application/json" --data-binary "@$FILE")
 if [ "$(echo "$ANSWER" | field valid)" != "True" ]; then
   echo "The flow has problems, not published:"

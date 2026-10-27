@@ -1,4 +1,4 @@
-// Platform admins: the models flows may use. Teams pick from these in a flow's
+// Platform admins: the models flows may use. Makers pick from these in a flow's
 // Settings; a draft naming anything else can't be test-called or published.
 import { useEffect, useState } from "react";
 import { ApiError, api, type CatalogEntry, type CatalogInput, type CatalogKind } from "../api";
@@ -48,7 +48,7 @@ export function ModelCatalog() {
 
   const toggle = async (e: CatalogEntry) => {
     try {
-      const input: CatalogInput = { label: e.label, notes: e.notes, languages: e.languages, teams: e.teams, enabled: !e.enabled };
+      const input: CatalogInput = { label: e.label, notes: e.notes, languages: e.languages, workspaces: e.workspaces, enabled: !e.enabled };
       const res = await api.putCatalog(e.kind, e.model_id, input);
       toast(
         e.enabled
@@ -76,8 +76,8 @@ export function ModelCatalog() {
     <main className="page wide">
       <h1>Model catalog</h1>
       <p className="muted" style={{ margin: "4px 0 0" }}>
-        The models teams can choose in a flow's Settings. A flow naming anything else, something switched off, or something not
-        offered to its team can't be test-called or published. Flows that leave a setting empty use the agent's default.
+        The models makers can choose in a flow's Settings. A flow naming anything else, something switched off, or something not
+        offered to its workspace can't be test-called or published. Flows that leave a setting empty use the agent's default.
       </p>
       {error && <div className="notice bad" style={{ marginTop: 16 }}>{error}</div>}
       {!entries && !error && <p className="muted">Loading…</p>}
@@ -103,7 +103,7 @@ export function ModelCatalog() {
                         <th>Name</th>
                         <th>{k.idLabel}</th>
                         <th>Languages</th>
-                        <th>Teams</th>
+                        <th>Workspaces</th>
                         <th>Status</th>
                         <th>Changed</th>
                         <th />
@@ -120,7 +120,7 @@ export function ModelCatalog() {
                             <code>{e.model_id}</code>
                           </td>
                           <td>{e.languages.length ? e.languages.join(", ") : <span className="muted">any</span>}</td>
-                          <td>{e.teams.length ? e.teams.join(", ") : <span className="muted">every team</span>}</td>
+                          <td>{e.workspaces.length ? e.workspaces.join(", ") : <span className="muted">every workspace</span>}</td>
                           <td>{e.enabled ? <span className="chip good">on</span> : <span className="chip">off</span>}</td>
                           <td className="muted" title={e.updated_by}>
                             {timeAgo(e.updated_at)}
@@ -168,14 +168,14 @@ function EntryDialog(props: { editing: Editing; onClose: () => void; onSaved: ()
   const [label, setLabel] = useState(e?.label ?? "");
   const [notes, setNotes] = useState(e?.notes ?? "");
   const [languages, setLanguages] = useState((e?.languages ?? []).join(", "));
-  const [teams, setTeams] = useState((e?.teams ?? []).join(", "));
+  const [workspaces, setWorkspaces] = useState((e?.workspaces ?? []).join(", "));
   const [enabled, setEnabled] = useState(e?.enabled ?? true);
   const [problems, setProblems] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
 
   const save = async () => {
     setSaving(true);
-    const input: CatalogInput = { label, notes, languages: list(languages), teams: list(teams), enabled };
+    const input: CatalogInput = { label, notes, languages: list(languages), workspaces: list(workspaces), enabled };
     try {
       const res = await api.putCatalog(k.kind, id.trim(), input);
       toast(res.created ? `${label} added.` : `${label} saved.`);
@@ -210,7 +210,7 @@ function EntryDialog(props: { editing: Editing; onClose: () => void; onSaved: ()
       <Field label={k.idLabel} hint={e ? "Can't be changed; add a new entry instead." : k.idHint}>
         <input className="mono" value={id} disabled={!!e} onChange={(ev) => setId(ev.target.value)} autoFocus={!e} />
       </Field>
-      <Field label="Name shown to teams">
+      <Field label="Name shown to makers">
         <input value={label} onChange={(ev) => setLabel(ev.target.value)} autoFocus={!!e} />
       </Field>
       <Field label="Notes (optional)" hint="When to use it, speed or cost. Shown under the dropdown.">
@@ -219,12 +219,12 @@ function EntryDialog(props: { editing: Editing; onClose: () => void; onSaved: ()
       <Field label="Languages (optional)" hint="Comma-separated codes, e.g. hi, en. Empty = any language.">
         <input value={languages} onChange={(ev) => setLanguages(ev.target.value)} />
       </Field>
-      <Field label="Teams (optional)" hint="Comma-separated, e.g. emi, complaints. Empty = every team.">
-        <input value={teams} onChange={(ev) => setTeams(ev.target.value)} />
+      <Field label="Workspaces (optional)" hint="Comma-separated workspace ids, e.g. emi, complaints. Empty = every workspace.">
+        <input value={workspaces} onChange={(ev) => setWorkspaces(ev.target.value)} />
       </Field>
       <label className="check">
         <input type="checkbox" checked={enabled} onChange={(ev) => setEnabled(ev.target.checked)} />
-        Switched on (teams can choose it)
+        Switched on (makers can choose it)
       </label>
     </Dialog>
   );

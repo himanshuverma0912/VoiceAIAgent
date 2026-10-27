@@ -18,20 +18,20 @@ const MODEL_FIELDS: { kind: CatalogKind; setting: ModelSetting; label: string; f
   { kind: "tts_voice", setting: "tts_voice_id", label: "Voice", fallback: "the agent's default voice" },
 ];
 
-/** A dropdown of the catalog's entries of one kind that this flow's team may use. */
+/** A dropdown of the catalog's entries of one kind that this flow's workspace may use. */
 function ModelSelect(props: {
   kind: CatalogKind;
   setting: ModelSetting;
   fallback: string;
   value: string;
-  team: string;
+  workspace: string;
   language: string;
   catalog: CatalogEntry[] | null;
   disabled: boolean;
   onChange: (v: string) => void;
 }) {
   const all = (props.catalog ?? []).filter((e) => e.kind === props.kind);
-  const offered = all.filter((e) => offeredTo(e, props.team));
+  const offered = all.filter((e) => offeredTo(e, props.workspace));
   const current = all.find((e) => e.model_id === props.value);
   const listed = offered.some((e) => e.model_id === props.value);
   const langNote = (e: CatalogEntry) => (e.languages.length ? ` · ${e.languages.join(", ")}` : "");
@@ -41,7 +41,7 @@ function ModelSelect(props: {
         <option value="">Default: {props.fallback}</option>
         {props.value && !listed && (
           <option value={props.value}>
-            {current ? `${current.label} (${current.enabled ? "not offered to this team" : "switched off"})` : `${props.value} (not in the catalog)`}
+            {current ? `${current.label} (${current.enabled ? "not offered to this workspace" : "switched off"})` : `${props.value} (not in the catalog)`}
           </option>
         )}
         {offered.map((e) => (
@@ -52,14 +52,14 @@ function ModelSelect(props: {
         ))}
       </select>
       {current?.notes && <div className="hint">{current.notes}</div>}
-      {props.catalog !== null && offered.length === 0 && <div className="hint">Nothing in the model catalog for this team yet; ask a platform admin.</div>}
+      {props.catalog !== null && offered.length === 0 && <div className="hint">Nothing in the model catalog for this workspace yet; ask a platform admin.</div>}
     </>
   );
 }
 
 export function SettingsEditor(props: {
   flow: Flow;
-  team: string;
+  workspace: string;
   catalog: CatalogEntry[] | null;
   editable: boolean;
   problems: string[];
@@ -82,7 +82,7 @@ export function SettingsEditor(props: {
         setting={m.setting}
         fallback={m.fallback}
         value={(s[m.setting] as string | null | undefined) ?? ""}
-        team={props.team}
+        workspace={props.workspace}
         language={s.language ?? "hi"}
         catalog={props.catalog}
         disabled={!ed}

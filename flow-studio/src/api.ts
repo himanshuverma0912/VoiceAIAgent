@@ -1,22 +1,40 @@
 // The config service's API, as Flow Studio uses it (through Caddy at /api).
 import { accessToken } from "./auth";
 
+/** A person's place in a workspace. Everyone in it can look; makers edit and
+ * submit; checkers approve or reject other people's submissions; owners manage members. */
+export interface Membership {
+  workspace_id: string;
+  name: string;
+  maker: boolean;
+  checker: boolean;
+  owner: boolean;
+}
+
 export interface Me {
   subject: string;
   email: string;
   name: string;
   roles: string[];
-  teams: string[];
+  workspaces: Membership[];
+}
+
+export interface ReviewRef {
+  review_id: number;
+  submitted_by: string;
+  submitted_at: string;
+  checksum: string;
 }
 
 export interface FlowSummary {
   flow_id: string;
   name: string;
-  team: string;
+  workspace: string;
   latest_version: number | null;
   draft_updated_at: string | null;
   draft_valid: boolean | null;
   numbers: string[];
+  pending_review: ReviewRef | null;
 }
 
 export interface Draft {
@@ -33,8 +51,69 @@ export interface Version {
   version: number;
   checksum: string;
   published_at: string;
-  published_by: string;
+  published_by: string; // the checker who approved it
+  submitted_by: string; // the maker who submitted it ("" if published by a script)
   spec?: unknown;
+}
+
+export interface Review {
+  review_id: number;
+  flow_id: string;
+  flow_name: string;
+  workspace: string;
+  checksum: string;
+  base_version: number | null;
+  note: string;
+  submitted_by: string;
+  submitted_at: string;
+  status: "pending" | "approved" | "rejected" | "withdrawn" | "superseded";
+  decided_by: string;
+  decided_at: string | null;
+  decision_note: string;
+  version: number | null;
+  spec?: unknown;
+  for_me?: boolean;
+}
+
+export interface Workspace {
+  workspace_id: string;
+  name: string;
+  created_at: string;
+  created_by: string;
+  flows: number;
+  members: number;
+  my_roles: { maker: boolean; checker: boolean; owner: boolean } | null;
+}
+
+export interface Member {
+  email: string;
+  maker: boolean;
+  checker: boolean;
+  owner: boolean;
+  added_at: string;
+  added_by: string;
+}
+
+export interface BuildResult {
+  flow: unknown;
+  notes: string[];
+  problems: string[];
+  attempts: number;
+  steps: number;
+  input_tokens: number;
+  output_tokens: number;
+}
+
+export interface Build {
+  build_id: string;
+  flow_id: string;
+  name: string;
+  workspace: string;
+  status: "running" | "done" | "failed";
+  progress: string;
+  error?: string;
+  result?: BuildResult;
+  started_at: string;
 }
 
 // ── Model catalog: the models flows may use ──
@@ -47,17 +126,17 @@ export interface CatalogEntry {
   label: string;
   notes: string;
   languages: string[]; // empty: any
-  teams: string[]; // empty: every team
+  workspaces: string[]; // empty: every workspace
   enabled: boolean;
   updated_at: string;
   updated_by: string;
 }
 
-export type CatalogInput = Pick<CatalogEntry, "label" | "notes" | "languages" | "teams" | "enabled">;
+export type CatalogInput = Pick<CatalogEntry, "label" | "notes" | "languages" | "workspaces" | "enabled">;
 
-/** May a flow of this team use the entry? (The server checks the same.) */
-export function offeredTo(e: CatalogEntry, team: string): boolean {
-  return e.enabled && (e.teams.length === 0 || e.teams.includes(team));
+/** May a flow of this workspace use the entry? (The server checks the same.) */
+export function offeredTo(e: CatalogEntry, workspace: string): boolean {
+  return e.enabled && (e.workspaces.length === 0 || e.workspaces.includes(workspace));
 }
 
 // ── Call history (counts and timings only; no call content) ──
@@ -143,13 +222,18 @@ async function call<T>(method: string, path: string, body?: string, headers: Rec
   return data as T;
 }
 
+const isAdmin = (me: Me) => me.roles.includes("platform-admin");
+const membership = (me: Me, ws: string) => me.workspaces.find((m) => m.workspace_id === ws);
+
+/** What the signed-in person may do (the server checks the same rules). */
 export const can = {
-  edit: (me: Me, team: string) => me.roles.includes("platform-admin") || (me.roles.includes("flow-editor") && me.teams.includes(team)),
-  publish: (me: Me, team: string) =>
-    me.roles.includes("platform-admin") || (me.roles.includes("flow-publisher") && me.teams.includes(team)),
-  /** Teams this person can create flows in ("*" = any, for admins). */
-  createIn: (me: Me): string[] | "*" =>
-    me.roles.includes("platform-admin") ? "*" : me.roles.includes("flow-editor") ? me.teams : [],
+  admin: isAdmin,
+  see: (me: Me, ws: string) => isAdmin(me) || !!membership(me, ws),
+  edit: (me: Me, ws: string) => isAdmin(me) || !!membership(me, ws)?.maker,
+  approve: (me: Me, ws: string) => isAdmin(me) || !!membership(me, ws)?.checker,
+  manage: (me: Me, ws: string) => isAdmin(me) || !!membership(me, ws)?.owner,
+  /** Workspaces this person can create flows in ("*" = any, for admins). */
+  createIn: (me: Me): Membership[] | "*" => (isAdmin(me) ? "*" : me.workspaces.filter((m) => m.maker)),
 };
 
 export const api = {
@@ -157,18 +241,22 @@ export const api = {
   flows: () => call<{ flows: FlowSummary[] }>("GET", "/v1/flows").then((r) => r.flows),
   flow: (id: string) => call<FlowSummary>("GET", `/v1/flows/${id}`),
   draft: (id: string) => call<Draft>("GET", `/v1/flows/${id}/draft`),
-  /** team: also check the model catalog as it applies to that team. */
-  validate: (specText: string, team?: string) =>
-    call<{ valid: boolean; problems: string[] }>("POST", `/v1/validate${team ? `?team=${encodeURIComponent(team)}` : ""}`, specText),
+  /** workspace: also check the model catalog as it applies there. */
+  validate: (specText: string, workspace?: string) =>
+    call<{ valid: boolean; problems: string[] }>(
+      "POST",
+      `/v1/validate${workspace ? `?workspace=${encodeURIComponent(workspace)}` : ""}`,
+      specText,
+    ),
   catalog: () => call<{ entries: CatalogEntry[] }>("GET", "/v1/catalog").then((r) => r.entries),
   putCatalog: (kind: CatalogKind, id: string, input: CatalogInput) =>
     call<{ created: boolean; used_by: string[] }>("PUT", `/v1/catalog/${kind}/${encodeURIComponent(id)}`, JSON.stringify(input)),
   deleteCatalog: (kind: CatalogKind, id: string) => call<void>("DELETE", `/v1/catalog/${kind}/${encodeURIComponent(id)}`),
   /** ifMatch: only save if nobody else saved since (409 otherwise). createOnly: fail if the flow exists. */
-  saveDraft: (id: string, specText: string, opts: { team?: string; ifMatch?: string; createOnly?: boolean } = {}) =>
+  saveDraft: (id: string, specText: string, opts: { workspace?: string; ifMatch?: string; createOnly?: boolean } = {}) =>
     call<{ valid: boolean; problems: string[]; checksum: string }>(
       "PUT",
-      `/v1/flows/${id}/draft${opts.team ? `?team=${encodeURIComponent(opts.team)}` : ""}`,
+      `/v1/flows/${id}/draft${opts.workspace ? `?workspace=${encodeURIComponent(opts.workspace)}` : ""}`,
       specText,
       {
         ...(opts.ifMatch ? { "If-Match": `"${opts.ifMatch}"` } : {}),
@@ -177,8 +265,32 @@ export const api = {
     ),
   saveLayout: (id: string, positions: Record<string, { x: number; y: number }>) =>
     call<void>("PUT", `/v1/flows/${id}/layout`, JSON.stringify({ positions })),
-  publish: (id: string) =>
-    call<{ version: number; unchanged: boolean; published_by: string }>("POST", `/v1/flows/${id}/publish`),
+  // ── maker-checker ──
+  submitReview: (id: string, note: string) => call<Review>("POST", `/v1/flows/${id}/reviews`, JSON.stringify({ note })),
+  reviews: (id: string) => call<{ reviews: Review[] }>("GET", `/v1/flows/${id}/reviews`).then((r) => r.reviews),
+  review: (id: string, reviewId: number) => call<Review>("GET", `/v1/flows/${id}/reviews/${reviewId}`),
+  approve: (id: string, reviewId: number, note: string) =>
+    call<{ version: number; published_by: string; submitted_by: string }>(
+      "POST",
+      `/v1/flows/${id}/reviews/${reviewId}/approve`,
+      JSON.stringify({ note }),
+    ),
+  reject: (id: string, reviewId: number, note: string) =>
+    call<Review>("POST", `/v1/flows/${id}/reviews/${reviewId}/reject`, JSON.stringify({ note })),
+  withdraw: (id: string, reviewId: number) => call<Review>("POST", `/v1/flows/${id}/reviews/${reviewId}/withdraw`),
+  pendingReviews: () => call<{ reviews: Review[] }>("GET", "/v1/reviews").then((r) => r.reviews),
+  // ── workspaces ──
+  workspaces: () => call<{ workspaces: Workspace[] }>("GET", "/v1/workspaces").then((r) => r.workspaces),
+  putWorkspace: (ws: string, name: string) => call<Workspace>("PUT", `/v1/workspaces/${ws}`, JSON.stringify({ name })),
+  deleteWorkspace: (ws: string) => call<void>("DELETE", `/v1/workspaces/${ws}`),
+  members: (ws: string) => call<{ workspace: Workspace; members: Member[] }>("GET", `/v1/workspaces/${ws}/members`),
+  putMember: (ws: string, email: string, roles: { maker: boolean; checker: boolean; owner: boolean }) =>
+    call<Member>("PUT", `/v1/workspaces/${ws}/members/${encodeURIComponent(email)}`, JSON.stringify(roles)),
+  removeMember: (ws: string, email: string) => call<void>("DELETE", `/v1/workspaces/${ws}/members/${encodeURIComponent(email)}`),
+  // ── AI flow builder ──
+  startBuild: (req: { workspace: string; flow_id: string; name: string; description: string }) =>
+    call<Build>("POST", "/v1/builds", JSON.stringify(req)),
+  build: (id: string) => call<Build>("GET", `/v1/builds/${id}`),
   versions: (id: string) => call<{ versions: Version[] }>("GET", `/v1/flows/${id}/versions`).then((r) => r.versions),
   version: (id: string, n: number) => call<Version>("GET", `/v1/flows/${id}/versions/${n}`),
   /** A browser test call of the saved draft: a LiveKit room with the agent dispatched. */

@@ -6,6 +6,8 @@ import { CallHistory } from "./pages/CallHistory";
 import { FlowEditor } from "./pages/FlowEditor";
 import { FlowList } from "./pages/FlowList";
 import { ModelCatalog } from "./pages/ModelCatalog";
+import { Reviews, useReviewCount } from "./pages/Reviews";
+import { WorkspaceMembers, Workspaces } from "./pages/Workspaces";
 import { Link, usePath } from "./router";
 
 type State = { phase: "loading" } | { phase: "signed-out"; error?: string } | { phase: "ready"; me: Me };
@@ -52,19 +54,32 @@ function Routes({ me }: { me: Me }) {
   const calls = /^\/flows\/([a-z][a-z0-9_]*)\/calls\/?$/.exec(path);
   if (calls) return <CallHistory key={calls[1]} flowId={calls[1]} />;
   if (/^\/admin\/models\/?$/.test(path) && me.roles.includes("platform-admin")) return <ModelCatalog />;
+  if (/^\/reviews\/?$/.test(path)) return <Reviews me={me} />;
+  if (/^\/workspaces\/?$/.test(path)) return <Workspaces me={me} />;
+  const ws = /^\/workspaces\/([a-z][a-z0-9_-]*)\/?$/.exec(path);
+  if (ws) return <WorkspaceMembers key={ws[1]} me={me} workspace={ws[1]} />;
   const m = /^\/flows\/([a-z][a-z0-9_]*)\/?$/.exec(path);
   if (m) return <FlowEditor key={m[1]} me={me} flowId={m[1]} />;
   return <FlowList me={me} />;
 }
 
 function TopBar({ me }: { me: Me }) {
+  const waiting = useReviewCount(me);
+  const admin = me.roles.includes("platform-admin");
+  const names = me.workspaces.map((m) => m.name || m.workspace_id);
   return (
     <header className="topbar">
       <Link to="/" className="brand">
         <img src="/favicon.svg" alt="" />
         Flow Studio
       </Link>
-      {me.roles.includes("platform-admin") && (
+      <Link to="/reviews" className="link">
+        Reviews{waiting > 0 && <span className="count">{waiting}</span>}
+      </Link>
+      <Link to="/workspaces" className="link">
+        Workspaces
+      </Link>
+      {admin && (
         <Link to="/admin/models" className="link">
           Model catalog
         </Link>
@@ -72,8 +87,8 @@ function TopBar({ me }: { me: Me }) {
       <span className="spacer" />
       <div className="user">
         <div>{me.name || me.email}</div>
-        <div className="muted">
-          {me.teams.length ? `Teams: ${me.teams.join(", ")}` : me.roles.includes("platform-admin") ? "Platform admin" : "No team"}
+        <div className="muted" title={names.join(", ")}>
+          {admin ? "Platform admin" : names.length ? (names.length > 2 ? `${names.length} workspaces` : names.join(", ")) : "No workspace yet"}
         </div>
       </div>
       <button onClick={signOut}>Sign out</button>
