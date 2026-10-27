@@ -4,6 +4,7 @@
 #   config-service  flows, versions, numbers (Go) + platform-db (its Postgres;
 #                   Keycloak keeps its own database in the same server)
 #   litellm         LLM + Deepgram gateway + postgres (its own Postgres)
+#   demo-bank       made-up core banking (MCP + REST) for test calls with tools
 #
 # The voice agent is NOT in this file. It is deployed by
 # .github/workflows/deploy.yml, which starts the new container before draining
@@ -179,6 +180,24 @@ services:
       - caddy_data:/data # certificates: keep them, or Let's Encrypt limits may bite
       - caddy_config:/config
     depends_on: [config-service, keycloak]
+    logging:
+      driver: json-file
+      options: { max-size: 10m, max-file: "3" }
+    networks: [voice-platform]
+
+  # Demo core-banking server: made-up customers, so flows can use tools (card
+  # balance, transactions, disputes) before the bank's real API is connected.
+  # Reached only inside this network: http://demo-bank:8000/mcp (MCP) and
+  # http://demo-bank:8000/api/... (REST). Register it once with
+  # scripts/add-integration.sh infra/integrations/demo_bank.json
+  demo-bank:
+    build: ./demo-bank
+    image: voice-platform/demo-bank:local
+    container_name: demo-bank
+    restart: unless-stopped
+    environment:
+      DEMO_BANK_TOKEN: ${DEMO_BANK_TOKEN:-} # empty: no token needed (it is only reachable inside this network)
+    mem_limit: 256m
     logging:
       driver: json-file
       options: { max-size: 10m, max-file: "3" }

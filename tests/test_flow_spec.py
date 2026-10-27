@@ -121,7 +121,7 @@ def test_unknown_variable():
     p = problems_for(lambda d: d["nodes"]["done"].update(instructions="Thank {{custmer_name}}."))
     assert p == [
         "nodes.done.instructions: unknown variable {{custmer_name}}; built-ins are caller_number, "
-        "dialed_number, now_ist, today_ist, plus any captured or collected field"
+        "dialed_number, now_ist, today_ist, plus any captured or collected field or saved API output"
     ]
 
 
@@ -216,5 +216,5 @@ def test_shape_errors_and_link_errors_reported_together():
         "nodes.ask.instrucions: unknown key (check the spelling)",
         "nodes.ask.transitions[0].to: 'dnoe' is not a node",
         "nodes.done.instructions: unknown variable {{who}}; built-ins are caller_number, "
-        "dialed_number, now_ist, today_ist, plus any captured or collected field",
+        "dialed_number, now_ist, today_ist, plus any captured or collected field or saved API output",
     ]

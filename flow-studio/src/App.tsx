@@ -5,6 +5,7 @@ import { Toasts } from "./components/ui";
 import { CallHistory } from "./pages/CallHistory";
 import { FlowEditor } from "./pages/FlowEditor";
 import { FlowList } from "./pages/FlowList";
+import { Integrations } from "./pages/Integrations";
 import { ModelCatalog } from "./pages/ModelCatalog";
 import { Reviews, useReviewCount } from "./pages/Reviews";
 import { WorkspaceMembers, Workspaces } from "./pages/Workspaces";
@@ -54,6 +55,7 @@ function Routes({ me }: { me: Me }) {
   const calls = /^\/flows\/([a-z][a-z0-9_]*)\/calls\/?$/.exec(path);
   if (calls) return <CallHistory key={calls[1]} flowId={calls[1]} />;
   if (/^\/admin\/models\/?$/.test(path) && me.roles.includes("platform-admin")) return <ModelCatalog />;
+  if (/^\/admin\/integrations\/?$/.test(path) && me.roles.includes("platform-admin")) return <Integrations />;
   if (/^\/reviews\/?$/.test(path)) return <Reviews me={me} />;
   if (/^\/workspaces\/?$/.test(path)) return <Workspaces me={me} />;
   const ws = /^\/workspaces\/([a-z][a-z0-9_-]*)\/?$/.exec(path);
@@ -80,9 +82,14 @@ function TopBar({ me }: { me: Me }) {
         Workspaces
       </Link>
       {admin && (
-        <Link to="/admin/models" className="link">
-          Model catalog
-        </Link>
+        <>
+          <Link to="/admin/models" className="link">
+            Model catalog
+          </Link>
+          <Link to="/admin/integrations" className="link">
+            Integrations
+          </Link>
+        </>
       )}
       <span className="spacer" />
       <div className="user">

@@ -4,6 +4,7 @@ What a record holds, and nothing else:
   - which flow and version ran, from where, on which runtime and channel
   - when the call started and how long it lasted
   - the steps it went through, with the time spent in each
+  - the tools it used (bank API, MCP server): which, whether each worked, how long
   - how it ended (completed, caller hung up, ended early, time limit, error)
   - how many times each side spoke, and how fast the agent answered
   - usage totals (LLM tokens, seconds of speech-to-text, characters spoken)
@@ -63,6 +64,7 @@ class CallRecorder:
         self._clock = clock
         self.started = clock()
         self._steps: list[tuple[str, float]] = []
+        self._tools: list[dict] = []
         self._caller_turns = 0
         self._agent_turns = 0
         self._latencies: list[float] = []
@@ -75,6 +77,11 @@ class CallRecorder:
 
     def node_entered(self, node_id: str) -> None:
         self._steps.append((node_id, self._clock()))
+
+    def tool_used(self, use: Any) -> None:
+        """A tool call: its name, whether it worked and how long it took (never inputs or answers)."""
+        if len(self._tools) < 200:
+            self._tools.append({"tool": use.tool, "ok": bool(use.ok), "ms": max(0, int(use.ms))})
 
     def agent_ended_call(self) -> None:
         self._agent_ended = True
@@ -142,6 +149,7 @@ class CallRecorder:
             "duration_ms": max(0, round((ended - self.started) * 1000)),
             "outcome": self.outcome(),
             "steps": steps[:200],
+            "tools": list(self._tools),
             "turns": {"caller": self._caller_turns, "agent": self._agent_turns},
             "latency_ms": latency,
             "usage": _usage_totals(usage),

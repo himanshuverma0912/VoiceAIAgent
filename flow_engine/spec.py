@@ -14,15 +14,34 @@ collect  Collects named fields from the caller, one after another, then moves
          to "next". Fields are either built-in (name, phone, email, address,
          date_of_birth, digits) or custom (described in plain words). The
          caller can go back and correct an earlier answer.
+api      Calls one tool of an integration (a bank API or MCP server) without
+         the LLM deciding anything: fills its inputs from {{variables}},
+         optionally says a short line while waiting, keeps the outputs listed
+         in "save" as variables, then moves to "next" (or "on_error" if the
+         call fails). "verifies": true marks a step that checks who the caller
+         is; tools that need a verified caller can only be used after it.
 end      Final step: says its final words and the goodbye, then hangs up.
          It doesn't wait for the caller, so handle "anything else?" in the
          node before it.
+
+Tools
+-----
+Integrations are registered in the config service (URL, credentials, which
+workspaces may use them, which tools). A flow refers to a tool as
+"<integration>.<tool>", e.g. "demo_bank.get_card_balance":
+  - the flow's "tools" are offered on every conversation (agent) step;
+  - an agent node's "tools" are offered on that step only;
+  - "inputs" given in the flow are filled from {{variables}} and hidden from
+    the LLM, so it can't change them (e.g. the verified card digits).
+Which tools exist, and which need a verified caller, is checked by the config
+service against its integrations list; this module checks the shape.
 
 Variables
 ---------
 Text fields can use {{variable}}. Built-ins: caller_number, dialed_number,
 now_ist, today_ist. Every captured or collected value is also a variable,
-named after the field (e.g. {{issue_summary}}, {{city}}).
+named after the field (e.g. {{issue_summary}}, {{city}}), and so is every
+output an API step saves (e.g. {{minimum_due}}).
 
 Check a flow file from the command line:
     python -m flow_engine flows/complaint-helpline.json
@@ -53,6 +72,11 @@ IDENTIFIER_PATTERN = r"^[a-z][a-z0-9_]{0,47}$"
 IDENTIFIER_MESSAGE = "must be lower-case letters, digits and _ , starting with a letter (max 48 characters)"
 Identifier = Annotated[str, Field(pattern=IDENTIFIER_PATTERN)]
 VARIABLE_RE = re.compile(r"\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}")
+
+# A tool of an integration: "<integration>.<tool>". MCP tool names may use
+# capitals and "-", so the tool part allows them.
+TOOL_PATTERN = r"^[a-z][a-z0-9_]{0,31}\.[A-Za-z0-9_-]{1,64}$"
+TOOL_MESSAGE = "must be '<integration>.<tool>', e.g. 'demo_bank.get_card_balance'"
 
 
 class _Strict(BaseModel):
@@ -85,6 +109,23 @@ class Transition(_Strict):
     @property
     def tool_name(self) -> str:
         return self.name or f"go_to_{self.to}"
+
+
+class ToolUse(_Strict):
+    tool: str = Field(pattern=TOOL_PATTERN, description="'<integration>.<tool>'")
+    inputs: dict[str, str] = Field(
+        default_factory=dict,
+        description="Inputs set by the flow (text with {{variables}}); the LLM can't see or change them",
+    )
+
+    @property
+    def integration(self) -> str:
+        return self.tool.split(".", 1)[0]
+
+    @property
+    def tool_name(self) -> str:
+        """The name the LLM sees."""
+        return self.tool.split(".", 1)[1]
 
 
 # ── Fields collected by a "collect" node ──────────────────────────────────────
@@ -164,6 +205,7 @@ class AgentNode(_Strict):
         default="speak",
         description="'speak': the agent talks first when this node starts; 'wait': it listens first",
     )
+    tools: list[ToolUse] = Field(default_factory=list, description="Tools the LLM may use on this step")
 
 
 class CollectNode(_Strict):
@@ -171,6 +213,21 @@ class CollectNode(_Strict):
     instructions: str = Field(default="", description="Extra guidance for the whole collection step")
     fields: list[CollectField] = Field(min_length=1)
     next: Identifier = Field(description="Id of the node to move to once every field is collected")
+
+
+class ApiNode(_Strict):
+    type: Literal["api"]
+    tool: str = Field(pattern=TOOL_PATTERN, description="'<integration>.<tool>' to call")
+    inputs: dict[str, str] = Field(default_factory=dict, description="The tool's inputs (text with {{variables}})")
+    save: list[Identifier] = Field(
+        default_factory=list, description="Outputs to keep as variables, e.g. ['minimum_due', 'due_date']"
+    )
+    say: str = Field(default="", description="Said while the call runs, e.g. 'One moment while I check.'")
+    verifies: bool = Field(
+        default=False, description="This step checks who the caller is; it must fail when the details don't match"
+    )
+    next: Identifier = Field(description="Id of the node to move to when the call works")
+    on_error: Identifier = Field(description="Id of the node to move to when the call fails")
 
 
 class EndNode(_Strict):
@@ -182,7 +239,7 @@ class EndNode(_Strict):
     )
 
 
-Node = Annotated[Union[AgentNode, CollectNode, EndNode], Field(discriminator="type")]
+Node = Annotated[Union[AgentNode, CollectNode, ApiNode, EndNode], Field(discriminator="type")]
 
 
 class FlowSettings(_Strict):
@@ -206,6 +263,7 @@ class Flow(_Strict):
         default=True, description="Let the agent hang up from any node if the caller clearly wants to end"
     )
     settings: FlowSettings = Field(default_factory=FlowSettings)
+    tools: list[ToolUse] = Field(default_factory=list, description="Tools the LLM may use on every conversation step")
     start_node: Identifier
     nodes: dict[Identifier, Node] = Field(min_length=1)
 
@@ -221,11 +279,16 @@ class FlowError(Exception):
         super().__init__("Invalid flow:\n" + "\n".join(f"  - {p}" for p in problems))
 
 
-def _successors(node: AgentNode | CollectNode | EndNode) -> list[str]:
+AnyNode = Union[AgentNode, CollectNode, ApiNode, EndNode]
+
+
+def _successors(node: AnyNode) -> list[str]:
     if isinstance(node, AgentNode):
         return [t.to for t in node.transitions]
     if isinstance(node, CollectNode):
         return [node.next]
+    if isinstance(node, ApiNode):
+        return [node.next, node.on_error]
     return []
 
 
@@ -235,10 +298,16 @@ def _texts(flow: Flow) -> list[tuple[str, str]]:
     out += [(f"guardrails[{i}]", g) for i, g in enumerate(flow.guardrails)]
     if flow.greeting:
         out.append(("greeting", flow.greeting))
+    out += _tool_input_texts("tools", flow.tools)
     for nid, node in flow.nodes.items():
+        if isinstance(node, ApiNode):
+            out += [(f"nodes.{nid}.inputs.{k}", v) for k, v in node.inputs.items()]
+            out.append((f"nodes.{nid}.say", node.say))
+            continue
         out.append((f"nodes.{nid}.instructions", node.instructions))
         if isinstance(node, AgentNode):
             out += [(f"nodes.{nid}.transitions[{i}].when", t.when) for i, t in enumerate(node.transitions)]
+            out += _tool_input_texts(f"nodes.{nid}.tools", node.tools)
         elif isinstance(node, CollectNode):
             out += [(f"nodes.{nid}.fields[{i}].instructions", f.instructions) for i, f in enumerate(node.fields)]
         else:
@@ -246,17 +315,31 @@ def _texts(flow: Flow) -> list[tuple[str, str]]:
     return out
 
 
+def _tool_input_texts(loc: str, tools: list[ToolUse]) -> list[tuple[str, str]]:
+    return [(f"{loc}[{i}].inputs.{k}", v) for i, t in enumerate(tools) for k, v in t.inputs.items()]
+
+
+def _variable_places(nid: str, node: AnyNode) -> list[tuple[str, str]]:
+    """(variable, where) for every variable a node defines, in order."""
+    if isinstance(node, AgentNode):
+        return [
+            (var, f"nodes.{nid}.transitions[{i}].capture.{var}")
+            for i, t in enumerate(node.transitions)
+            for var in t.capture
+        ]
+    if isinstance(node, CollectNode):
+        return [(f.name, f"nodes.{nid}.fields[{i}]") for i, f in enumerate(node.fields)]
+    if isinstance(node, ApiNode):
+        return [(var, f"nodes.{nid}.save[{i}]") for i, var in enumerate(node.save)]
+    return []
+
+
 def defined_variables(flow: Flow) -> dict[str, str]:
     """Every variable a flow defines, mapped to where it's defined."""
     defined: dict[str, str] = {}
     for nid, node in flow.nodes.items():
-        if isinstance(node, AgentNode):
-            for i, t in enumerate(node.transitions):
-                for var in t.capture:
-                    defined.setdefault(var, f"nodes.{nid}.transitions[{i}].capture.{var}")
-        elif isinstance(node, CollectNode):
-            for i, f in enumerate(node.fields):
-                defined.setdefault(f.name, f"nodes.{nid}.fields[{i}]")
+        for var, where in _variable_places(nid, node):
+            defined.setdefault(var, where)
     return defined
 
 
@@ -291,6 +374,14 @@ def check_flow(flow: Flow) -> list[str]:
             for i, f in enumerate(node.fields):
                 if isinstance(f, CustomField) and f.enum and f.type != "string":
                     problems.append(f"nodes.{nid}.fields[{i}].enum: only string fields can have an enum")
+        elif isinstance(node, ApiNode):
+            for key in ("next", "on_error"):
+                target = getattr(node, key)
+                if target not in ids:
+                    problems.append(f"nodes.{nid}.{key}: '{target}' is not a node")
+                elif target == nid:
+                    problems.append(f"nodes.{nid}.{key}: a node can't move to itself")
+    problems += _tool_name_problems(flow)
     for nid, node in flow.nodes.items():
         if isinstance(node, AgentNode):
             for i, t in enumerate(node.transitions):
@@ -330,13 +421,7 @@ def check_flow(flow: Flow) -> list[str]:
     # {{reference}} is a built-in or defined somewhere in the flow.
     seen: dict[str, str] = {}
     for nid, node in flow.nodes.items():
-        places: list[tuple[str, str]] = []
-        if isinstance(node, AgentNode):
-            for i, t in enumerate(node.transitions):
-                places += [(var, f"nodes.{nid}.transitions[{i}].capture.{var}") for var in t.capture]
-        elif isinstance(node, CollectNode):
-            places += [(f.name, f"nodes.{nid}.fields[{i}]") for i, f in enumerate(node.fields)]
-        for var, where in places:
+        for var, where in _variable_places(nid, node):
             if var in BUILTIN_VARIABLES:
                 problems.append(f"{where}: '{var}' is a built-in variable; choose another name")
             elif var in seen:
@@ -351,10 +436,41 @@ def check_flow(flow: Flow) -> list[str]:
     return problems
 
 
+def _tool_name_problems(flow: Flow) -> list[str]:
+    """The LLM sees each tool by its name alone, so names on one step must differ."""
+    problems: list[str] = []
+    everywhere: set[str] = set()
+    for i, t in enumerate(flow.tools):
+        if t.tool_name in everywhere:
+            problems.append(f"tools[{i}].tool: a tool called '{t.tool_name}' is already in the list")
+        everywhere.add(t.tool_name)
+    for nid, node in flow.nodes.items():
+        if not isinstance(node, AgentNode):
+            continue
+        transitions = {t.tool_name for t in node.transitions}
+        here: set[str] = set()
+        for i, t in enumerate(node.tools):
+            loc = f"nodes.{nid}.tools[{i}].tool"
+            if t.tool_name in everywhere:
+                problems.append(f"{loc}: '{t.tool_name}' is already on every step (the flow's tools); remove it here")
+            elif t.tool_name in here:
+                problems.append(f"{loc}: a tool called '{t.tool_name}' is already on this step")
+            elif t.tool_name in transitions:
+                problems.append(f"{loc}: a transition on this step is also called '{t.tool_name}'; rename the transition")
+            here.add(t.tool_name)
+        for k, tr in enumerate(node.transitions):
+            if tr.tool_name in everywhere:
+                problems.append(
+                    f"nodes.{nid}.transitions[{k}]: '{tr.tool_name}' is also the name of a tool on every step; "
+                    "rename the transition"
+                )
+    return problems
+
+
 def _unknown_variable(where: str, var: str) -> str:
     return (
         f"{where}: unknown variable {{{{{var}}}}}; built-ins are "
-        f"{', '.join(sorted(BUILTIN_VARIABLES))}, plus any captured or collected field"
+        f"{', '.join(sorted(BUILTIN_VARIABLES))}, plus any captured or collected field or saved API output"
     )
 
 
@@ -401,7 +517,7 @@ def _best_effort_checks(data: object) -> list[str]:
     for nid, node in nodes.items():
         if not isinstance(node, dict):
             continue
-        for key in ("instructions", "goodbye"):
+        for key in ("instructions", "goodbye", "say"):
             if isinstance(node.get(key), str):
                 texts.append((f"nodes.{nid}.{key}", node[key]))
         transitions = node.get("transitions") or node.get("transitons") or []
@@ -414,8 +530,13 @@ def _best_effort_checks(data: object) -> list[str]:
                 defined.update(t["capture"])
             if isinstance(t.get("when"), str):
                 texts.append((f"nodes.{nid}.transitions[{i}].when", t["when"]))
-        if isinstance(node.get("next"), str) and node["next"] not in nodes:
-            problems.append(f"nodes.{nid}.next: '{node['next']}' is not a node")
+        for key in ("next", "on_error"):
+            if isinstance(node.get(key), str) and node[key] not in nodes:
+                problems.append(f"nodes.{nid}.{key}: '{node[key]}' is not a node")
+        save = node.get("save")
+        for var in save if isinstance(save, list) else []:
+            if isinstance(var, str):
+                defined.add(var)
         fields = node.get("fields")
         for i, f in enumerate(fields if isinstance(fields, list) else []):
             if isinstance(f, dict):
@@ -439,7 +560,7 @@ def _format_loc(loc: tuple) -> str:
     that happens to be called "end" keeps its name."""
     out = ""
     for i, part in enumerate(loc):
-        if i == 2 and loc[0] == "nodes" and part in ("agent", "collect", "end"):
+        if i == 2 and loc[0] == "nodes" and part in ("agent", "collect", "api", "end"):
             continue
         if (
             i >= 2
@@ -463,6 +584,8 @@ def _format_pydantic_error(err: dict) -> str:
         msg = "unknown key (check the spelling)"
     elif err["type"] == "string_pattern_mismatch" and (err.get("ctx") or {}).get("pattern") == IDENTIFIER_PATTERN:
         msg = IDENTIFIER_MESSAGE
+    elif err["type"] == "string_pattern_mismatch" and (err.get("ctx") or {}).get("pattern") == TOOL_PATTERN:
+        msg = TOOL_MESSAGE
     elif err["type"] == "string_pattern_mismatch":
         msg = "must be a language code like 'hi', 'en', 'hi-IN', or 'multi'"
     elif err["type"] == "union_tag_invalid":
@@ -471,7 +594,7 @@ def _format_pydantic_error(err: dict) -> str:
             loc += ".builtin"
             msg = f"unknown built-in '{tag[len('builtin:'):]}'; use one of {', '.join(BUILTIN_FIELDS)}"
         else:
-            msg = f"unknown node type '{tag}'; use 'agent', 'collect' or 'end'"
+            msg = f"unknown node type '{tag}'; use 'agent', 'collect', 'api' or 'end'"
     return f"{loc or '(top level)'}: {msg}"
 
 

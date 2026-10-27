@@ -106,6 +106,9 @@ func (s *Server) Handler() http.Handler {
 	v1("POST /v1/flows/{flow_id}/reviews/{review_id}/reject", s.rejectReview)
 	v1("POST /v1/flows/{flow_id}/reviews/{review_id}/withdraw", s.withdrawReview)
 	v1("GET /v1/reviews", s.pendingReviews)
+	v1("GET /v1/integrations", s.listIntegrations)
+	v1("PUT /v1/integrations/{integration_id}", s.putIntegration)
+	v1("DELETE /v1/integrations/{integration_id}", s.deleteIntegration)
 	v1("POST /v1/builds", s.startBuild)
 	v1("GET /v1/builds/{build_id}", s.getBuild)
 	v1("GET /v1/catalog", s.listCatalog)
@@ -472,17 +475,11 @@ func (s *Server) putDraft(w http.ResponseWriter, r *http.Request) {
 		}
 		catalogWorkspace = ws
 	}
-	decoded, problems, err := checkSpec(body, id)
+	decoded, problems, err := s.checkFlow(r.Context(), body, id, catalogWorkspace)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "not valid JSON: "+err.Error())
 		return
 	}
-	entries, err := s.Store.ListCatalog(r.Context())
-	if err != nil {
-		s.fail(w, err)
-		return
-	}
-	problems = append(problems, catalogProblems(entries, decoded, catalogWorkspace)...)
 	name := id
 	if root, ok := decoded.(*flowspec.Object); ok {
 		if n, ok := root.Values["name"].(string); ok && n != "" {
@@ -798,12 +795,30 @@ func (s *Server) resolve(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
+	// The integrations the flow uses come with it; a change to them (a new
+	// URL, a tool switched off) changes the ETag, so the agent picks it up.
+	ws, err := s.Store.FlowWorkspace(r.Context(), res.FlowID)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	integrations, digest, err := s.runtimeIntegrations(r.Context(), res.Spec, ws, false)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
 	etag := fmt.Sprintf(`"%s.v%d.%s"`, res.FlowID, res.Version, res.Checksum[:16])
+	if digest != "" {
+		etag = fmt.Sprintf(`"%s.v%d.%s.%s"`, res.FlowID, res.Version, res.Checksum[:16], digest)
+	}
 	w.Header().Set("ETag", etag)
 	w.Header().Set("Cache-Control", "no-cache") // always revalidate
 	if r.Header.Get("If-None-Match") == etag {
 		w.WriteHeader(http.StatusNotModified)
 		return
 	}
-	writeJSON(w, http.StatusOK, res)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"number": res.Number, "flow_id": res.FlowID, "version": res.Version, "checksum": res.Checksum,
+		"spec": res.Spec, "integrations": integrations,
+	})
 }

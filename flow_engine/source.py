@@ -18,6 +18,10 @@ If the service can't answer, the call still goes ahead:
 Test calls from Flow Studio ("Talk to this draft") instead load the flow's
 current draft by id (draft_for). There is no fallback for those: talking to a
 different flow than the one being tested would be misleading.
+
+With the flow come the integrations it uses (see tools.py): where to call and
+which tools, but no secrets (those are in this agent's .env). Test calls get
+each integration's test URL when it has one.
 """
 
 from __future__ import annotations
@@ -28,12 +32,14 @@ import json
 import logging
 import os
 import re
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import aiohttp
 
 from .spec import Flow, FlowError, parse_flow
+from .tools import Integration, integrations_to_json, parse_integrations
 
 logger = logging.getLogger("flow-source")
 
@@ -52,6 +58,7 @@ class ResolvedFlow:
     source: str  # FROM_SERVICE, FROM_CACHE, FROM_FILE or FROM_DRAFT
     version: int | None = None  # published version; None for the fallback file and drafts
     checksum: str | None = None  # drafts: which saved draft this is
+    integrations: Mapping[str, Integration] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -59,6 +66,7 @@ class _Entry:
     etag: str
     version: int
     flow: Flow
+    integrations: Mapping[str, Integration] = field(default_factory=dict)
 
 
 class FlowSource:
@@ -101,7 +109,7 @@ class FlowSource:
             ) as resp:
                 if resp.status == 304 and cached:
                     self._memory[number] = cached
-                    return ResolvedFlow(cached.flow, FROM_SERVICE, cached.version)
+                    return ResolvedFlow(cached.flow, FROM_SERVICE, cached.version, None, cached.integrations)
                 if resp.status == 404:
                     self._forget(number)
                     logger.warning("number isn't mapped to a flow in the config service; using the fallback flow")
@@ -118,7 +126,9 @@ class FlowSource:
         try:
             data = json.loads(body)
             flow = parse_flow(data["spec"])
-            entry = _Entry(etag=etag, version=int(data["version"]), flow=flow)
+            entry = _Entry(
+                etag=etag, version=int(data["version"]), flow=flow, integrations=parse_integrations(data.get("integrations"))
+            )
         except FlowError as e:
             # The service validates before publishing, so this means the two
             # validators disagree (or a newer rule): keep calls on the last good flow.
@@ -129,8 +139,8 @@ class FlowSource:
             return self._last_known(cached)
 
         self._memory[number] = entry
-        self._write_disk(number, etag, entry.version, data["spec"])
-        return ResolvedFlow(flow, FROM_SERVICE, entry.version)
+        self._write_disk(number, etag, entry.version, data["spec"], entry.integrations)
+        return ResolvedFlow(flow, FROM_SERVICE, entry.version, None, entry.integrations)
 
     async def draft_for(self, flow_id: str, session: aiohttp.ClientSession) -> ResolvedFlow | None:
         """A flow's current draft, for a Flow Studio test call. None if it can't be loaded."""
@@ -160,11 +170,13 @@ class FlowSource:
         except (ValueError, KeyError, TypeError) as e:
             logger.error("config service sent an unexpected answer (%s)", type(e).__name__)
             return None
-        return ResolvedFlow(flow, FROM_DRAFT, None, str(data.get("checksum") or "") or None)
+        return ResolvedFlow(
+            flow, FROM_DRAFT, None, str(data.get("checksum") or "") or None, parse_integrations(data.get("integrations"))
+        )
 
     def _last_known(self, cached: _Entry | None) -> ResolvedFlow:
         if cached:
-            return ResolvedFlow(cached.flow, FROM_CACHE, cached.version)
+            return ResolvedFlow(cached.flow, FROM_CACHE, cached.version, None, cached.integrations)
         return ResolvedFlow(self.fallback, FROM_FILE)
 
     # ── Disk cache: one small JSON file per dialled number ────────────────────
@@ -180,18 +192,26 @@ class FlowSource:
             return None
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
-            return _Entry(etag=data["etag"], version=int(data["version"]), flow=parse_flow(data["spec"]))
+            return _Entry(
+                etag=data["etag"],
+                version=int(data["version"]),
+                flow=parse_flow(data["spec"]),
+                integrations=parse_integrations(data.get("integrations")),
+            )
         except (OSError, ValueError, KeyError, TypeError, FlowError):
             return None  # unreadable or outdated: ignore it, it's only a cache
 
-    def _write_disk(self, number: str, etag: str, version: int, spec: dict) -> None:
+    def _write_disk(
+        self, number: str, etag: str, version: int, spec: dict, integrations: Mapping[str, Integration]
+    ) -> None:
         path = self._path(number)
         if not path:
             return
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             tmp = path.with_suffix(f".{os.getpid()}.tmp")
-            tmp.write_text(json.dumps({"etag": etag, "version": version, "spec": spec}, ensure_ascii=False), encoding="utf-8")
+            record = {"etag": etag, "version": version, "spec": spec, "integrations": integrations_to_json(integrations)}
+            tmp.write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
             os.replace(tmp, path)  # atomic: other processes never see half a file
         except OSError as e:
             logger.warning("couldn't write the flow cache (%s)", e)

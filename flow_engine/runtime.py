@@ -11,8 +11,17 @@ becomes a LiveKit agent when the conversation reaches it:
                      field (LiveKit's prebuilt tasks for built-in fields, a
                      small custom task for the rest), saves the answers, then
                      hands off to the node in "next".
+    api node      -> ApiAgent: calls one tool of an integration with inputs
+                     from {{variables}} (saying a short line meanwhile), keeps
+                     the outputs listed in "save", then hands off to "next",
+                     or to "on_error" if the call failed. A step that
+                     "verifies" marks the caller as verified when it works.
     end node      -> EndAgent: says the node's final words plus the goodbye,
                      then hangs up (always; it doesn't wait for the caller).
+
+Tools (see tools.py): the flow's "tools" are offered on every agent step and
+a node's "tools" on that step. Inputs the flow sets are filled in from
+{{variables}} and hidden from the LLM.
 
 Every node's instructions are built the same way: persona, guardrails,
 values collected so far, then the node's own instructions, with
@@ -26,6 +35,8 @@ Docs this follows:
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -33,7 +44,7 @@ from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from livekit.agents import NOT_GIVEN, Agent, AgentTask, RunContext, function_tool, llm
+from livekit.agents import NOT_GIVEN, Agent, AgentTask, RunContext, StopResponse, ToolError, function_tool, llm
 from livekit.agents.beta.tools import EndCallTool
 from livekit.agents.beta.workflows import (
     GetAddressTask,
@@ -48,6 +59,7 @@ from livekit.agents.beta.workflows import (
 from .spec import (
     VARIABLE_RE,
     AgentNode,
+    ApiNode,
     BuiltinDigitsField,
     BuiltinNameField,
     BuiltinSimpleField,
@@ -55,7 +67,9 @@ from .spec import (
     CustomField,
     EndNode,
     Flow,
+    ToolUse,
 )
+from .tools import ToolCaller, ToolFailed, for_llm, json_schema
 
 logger = logging.getLogger("flow_engine")
 
@@ -81,6 +95,13 @@ QUESTION_RULES = (
     "- If the caller says something unrelated to this question, don't ignore it: reply "
     "briefly as the persona and rules say (for example, say what this line is for), "
     "then ask the question again."
+)
+
+# Added to a step's instructions when it has tools.
+TOOL_RULES = (
+    "You can look things up with your tools. Use them whenever the caller needs that "
+    "information, and never make up what a tool would tell you. If a tool fails, say you "
+    "couldn't check that right now and offer what the step allows instead."
 )
 
 IST = ZoneInfo("Asia/Kolkata")
@@ -126,6 +147,8 @@ class CallState:
     # Called with the node id whenever a step starts (the agent publishes it to
     # the room so Flow Studio can highlight the current step in a test call).
     on_node: Callable[[str], None] | None = None
+    # Calls the flow's integrations (None: the flow uses none, or none are available).
+    tools: ToolCaller | None = None
 
     def variables(self) -> dict[str, str]:
         now = datetime.now(IST)
@@ -142,6 +165,11 @@ class CallState:
         """Fill in {{variables}}; anything not collected yet reads '(not provided)'."""
         known = self.variables()
         return VARIABLE_RE.sub(lambda m: known.get(m.group(1), NOT_PROVIDED), text)
+
+    def render_input(self, text: str) -> str:
+        """Fill in a tool input; anything not collected yet is left empty."""
+        known = self.variables()
+        return VARIABLE_RE.sub(lambda m: known.get(m.group(1), ""), text).strip()
 
 
 # ── Instructions ──────────────────────────────────────────────────────────────
@@ -194,6 +222,8 @@ def build_node_agent(state: CallState, node_id: str, chat_ctx: llm.ChatContext |
         return CollectAgent(state, node_id, node, chat_ctx)
     if isinstance(node, EndNode):
         return EndAgent(state, node_id, node, chat_ctx)
+    if isinstance(node, ApiNode):
+        return ApiAgent(state, node_id, node, chat_ctx)
     raise TypeError(f"unsupported node type: {type(node).__name__}")
 
 
@@ -245,7 +275,11 @@ class FlowAgent(_NodeMixin, Agent):
         tools: list[llm.Tool | llm.Toolset] = [self._transition_tool(t) for t in node.transitions]
         if state.flow.allow_end_call_anywhere:
             tools += exit_tools(state)
+        integration_tools = [t for t in (tool_for_llm(state, use) for use in [*state.flow.tools, *node.tools]) if t]
+        tools += integration_tools
         body = node.instructions
+        if integration_tools:
+            body += "\n\n" + TOOL_RULES
         if node.transitions:
             body += "\n\nWhen to move on: as soon as one of these conditions is met, call its tool. " \
                     "Don't tell the caller you are moving to another step.\n" + "\n".join(
@@ -293,6 +327,91 @@ class FlowAgent(_NodeMixin, Agent):
         await self._greet_once()
         if self.node.on_enter == "speak":
             self.session.generate_reply()
+
+
+def tool_for_llm(state: CallState, use: ToolUse) -> llm.Tool | None:
+    """An integration's tool as the LLM sees it: its description, and only the
+    inputs the flow doesn't set itself. None if the tool isn't available on
+    this call (integration switched off or unreachable from the config)."""
+    found = state.tools.tool(use.tool) if state.tools else None
+    if found is None:
+        logger.warning("tool not available on this call", extra={"tool": use.tool})
+        return None
+    _integration, tool = found
+    hidden = set(use.inputs) | set(tool.locked)
+    schema = {
+        "type": "function",
+        "name": use.tool_name,
+        "description": tool.description,
+        "parameters": json_schema(tool, hidden),
+    }
+
+    @function_tool(raw_schema=schema)
+    async def _use(raw_arguments: dict[str, object], context: RunContext) -> str:
+        # The flow's own inputs win: the LLM can't override a locked or preset input.
+        args: dict[str, object] = {k: v for k, v in raw_arguments.items() if k not in hidden}
+        args.update({k: state.render_input(v) for k, v in use.inputs.items()})
+        try:
+            return for_llm(await state.tools.call(use.tool, args))  # type: ignore[union-attr]
+        except ToolFailed as e:
+            raise ToolError(f"{use.tool_name} didn't work: {e}") from None
+
+    return _use
+
+
+def _plain(value: Any) -> Any:
+    """An API output as a {{variable}}: text, or compact JSON for lists and objects."""
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str)
+    if isinstance(value, bool):
+        return "yes" if value else "no"
+    return value
+
+
+class ApiAgent(_NodeMixin, Agent):
+    """Calls the node's tool, keeps the outputs it saves, then moves on. The LLM
+    isn't involved: nothing here depends on it deciding to call the tool."""
+
+    def __init__(self, state: CallState, node_id: str, node: ApiNode, chat_ctx: llm.ChatContext | None) -> None:
+        self.state, self.node_id, self.node = state, node_id, node
+        super().__init__(
+            instructions=compose_instructions(state, node_id, "You are checking something for the caller; say nothing."),
+            chat_ctx=chat_ctx,
+        )
+
+    async def on_user_turn_completed(self, turn_ctx: llm.ChatContext, new_message: llm.ChatMessage) -> None:
+        # The call takes a moment; if the caller speaks meanwhile, the next step answers.
+        raise StopResponse()
+
+    async def _run(self) -> tuple[bool, dict]:
+        if self.state.tools is None:
+            logger.error("API step but no integrations on this call", extra={"node": self.node_id})
+            return False, {}
+        args = {k: self.state.render_input(v) for k, v in self.node.inputs.items()}
+        try:
+            return True, await self.state.tools.call(self.node.tool, args)
+        except ToolFailed:
+            return False, {}
+
+    async def on_enter(self) -> None:
+        self._entered()
+        await self._greet_once()
+        call = asyncio.create_task(self._run())
+        if self.node.say:
+            await self.session.say(self.state.render(self.node.say))
+        ok, result = await call
+        if self.session._is_closing():
+            logger.info("flow call ended", extra={"node": self.node_id})
+            return
+        if ok:
+            for name in self.node.save:
+                self.state.values[name] = _plain(result.get(name))
+            if self.node.verifies and self.state.tools:
+                self.state.tools.verified = True
+                logger.info("caller verified", extra={"node": self.node_id})
+        target = self.node.next if ok else self.node.on_error
+        logger.info("flow transition", extra={"from": self.node_id, "to": target, "ok": ok})
+        self.session.update_agent(build_node_agent(self.state, target, _handoff_ctx(self)))
 
 
 class EndAgent(_NodeMixin, Agent):

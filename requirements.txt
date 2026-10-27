@@ -1,6 +1,7 @@
-# LiveKit Agents 1.8 plus the plugins agent.py imports.
+# LiveKit Agents 1.8 plus the plugins agent.py imports, and the MCP client
+# (flow tools on MCP servers; see flow_engine/tools.py).
 # The turn detector and the default VAD are built into livekit-agents 1.8,
 # so the old silero and turn-detector extras are no longer needed.
-livekit-agents[deepgram,openai,cartesia]~=1.8.8
+livekit-agents[deepgram,openai,cartesia,mcp]~=1.8.8
 livekit-plugins-noise-cancellation~=0.3.2
 python-dotenv~=1.0

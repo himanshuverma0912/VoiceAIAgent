@@ -124,5 +124,11 @@ func (s *Server) internalDraft(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{"error": "the draft has problems", "problems": problems})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"flow_id": id, "checksum": d.Checksum, "spec": d.Spec})
+	// Test calls use each integration's test URL (a sandbox) when it has one.
+	integrations, _, err := s.runtimeIntegrations(r.Context(), d.Spec, ws, true)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"flow_id": id, "checksum": d.Checksum, "spec": d.Spec, "integrations": integrations})
 }

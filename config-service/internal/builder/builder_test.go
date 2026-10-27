@@ -124,6 +124,37 @@ func TestBuildFixesProblems(t *testing.T) {
 	}
 }
 
+func TestToolsAreListedForTheModel(t *testing.T) {
+	llm := &fakeLLM{replies: []string{goodFlow}}
+	srv := httptest.NewServer(llm)
+	defer srv.Close()
+	b := New(Config{URL: srv.URL, APIKey: "test-key", Model: "m"})
+	tools := []Tool{{
+		Ref: "demo_bank.get_card_balance", Description: "The balance.", Outputs: []string{"minimum_due"}, Sensitive: true,
+		Inputs: []ToolInput{{Name: "card_last4", Type: "string", Description: "Last 4 digits", Required: true, Locked: true}},
+	}}
+	if _, err := b.Build(context.Background(), Request{FlowID: "f", Name: "F", Description: "x", Tools: tools}, check, func(string) {}); err != nil {
+		t.Fatal(err)
+	}
+	user := llm.got[0]["messages"].([]any)[1].(map[string]any)["content"].(string)
+	for _, want := range []string{
+		"- demo_bank.get_card_balance: The balance. [needs a verified caller]",
+		"Inputs: card_last4 (string, required, set by the flow): Last 4 digits",
+		"Returns: minimum_due",
+	} {
+		if !strings.Contains(user, want) {
+			t.Errorf("want %q in:\n%s", want, user)
+		}
+	}
+	system := llm.got[0]["messages"].([]any)[0].(map[string]any)["content"].(string)
+	if !strings.Contains(system, `"verifies": true`) || !strings.Contains(system, "API step:") {
+		t.Error("the guide doesn't explain API steps")
+	}
+	if !strings.Contains(toolsSection(nil), "none") {
+		t.Error("no tools should say so")
+	}
+}
+
 func TestBuildGivesUpWithProblemsLeft(t *testing.T) {
 	srv := httptest.NewServer(&fakeLLM{replies: []string{brokenFlow}})
 	defer srv.Close()

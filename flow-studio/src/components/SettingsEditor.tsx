@@ -1,5 +1,6 @@
-import { offeredTo, type CatalogEntry, type CatalogKind } from "../api";
+import { offeredTo, type CatalogEntry, type CatalogKind, type OfferedTool } from "../api";
 import { problemText, type Flow, type FlowSettings } from "../spec";
+import { ToolUses } from "./Tools";
 import { Check, Field, VarText } from "./ui";
 
 const LANGUAGES = [
@@ -61,6 +62,7 @@ export function SettingsEditor(props: {
   flow: Flow;
   workspace: string;
   catalog: CatalogEntry[] | null;
+  tools: OfferedTool[] | null;
   editable: boolean;
   problems: string[];
   vars: { name: string; about: string }[];
@@ -171,6 +173,22 @@ export function SettingsEditor(props: {
         disabled={!ed}
         onChange={(v) => change((f) => (f.allow_end_call_anywhere = v))}
       />
+
+      <div className="section">
+        <h3 style={{ marginBottom: 6 }}>Tools on every step ({flow.tools?.length ?? 0})</h3>
+        <p className="hint" style={{ marginTop: 0 }}>
+          Lookups any caller may need at any moment, like help-centre answers or branches. Tools that need a verified caller
+          go on the steps after verification instead.
+        </p>
+        <ToolUses
+          uses={flow.tools ?? []}
+          offered={props.tools}
+          vars={vars}
+          editable={ed}
+          everyStep
+          change={(uses) => change((f) => (uses.length ? (f.tools = uses) : delete f.tools))}
+        />
+      </div>
 
       <div className="section">
         <h3 style={{ marginBottom: 10 }}>Voice and model</h3>

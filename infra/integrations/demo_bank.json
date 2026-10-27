@@ -1,0 +1,190 @@
+{
+  "kind": "mcp",
+  "label": "Demo bank (MCP)",
+  "notes": "Made-up customers for test calls; see infra/demo-bank/server.py.",
+  "url": "http://demo-bank:8000/mcp",
+  "test_url": "",
+  "auth_header": "Authorization",
+  "auth_env": "INTEGRATION_DEMO_BANK_TOKEN",
+  "timeout_ms": 5000,
+  "workspaces": [],
+  "enabled": true,
+  "tools": [
+    {
+      "name": "verify_customer",
+      "description": "Checks the caller's card (last 4 digits) and date of birth against the bank's records. Fails when they don't match.",
+      "inputs": [
+        {
+          "name": "card_last4",
+          "type": "string",
+          "description": "Last 4 digits of the caller's card",
+          "required": true
+        },
+        {
+          "name": "date_of_birth",
+          "type": "string",
+          "description": "The caller's date of birth, YYYY-MM-DD",
+          "required": true
+        }
+      ],
+      "outputs": [
+        "verified",
+        "first_name"
+      ],
+      "sensitive": false,
+      "locked": [
+        "card_last4",
+        "date_of_birth"
+      ],
+      "max_calls": 3
+    },
+    {
+      "name": "get_card_balance",
+      "description": "The caller's outstanding balance, minimum due, due date, any late fee and available credit, in rupees.",
+      "inputs": [
+        {
+          "name": "card_last4",
+          "type": "string",
+          "description": "Last 4 digits of the caller's card",
+          "required": true
+        },
+        {
+          "name": "date_of_birth",
+          "type": "string",
+          "description": "The caller's date of birth, YYYY-MM-DD",
+          "required": true
+        }
+      ],
+      "outputs": [
+        "outstanding",
+        "minimum_due",
+        "due_date",
+        "overdue",
+        "late_fee",
+        "credit_limit",
+        "available_credit"
+      ],
+      "sensitive": true,
+      "locked": [
+        "card_last4",
+        "date_of_birth"
+      ],
+      "max_calls": 3
+    },
+    {
+      "name": "recent_transactions",
+      "description": "The caller's latest card payments (date, merchant, amount), newest first. Use it when they ask about recent spending or a payment.",
+      "inputs": [
+        {
+          "name": "card_last4",
+          "type": "string",
+          "description": "Last 4 digits of the caller's card",
+          "required": true
+        },
+        {
+          "name": "date_of_birth",
+          "type": "string",
+          "description": "The caller's date of birth, YYYY-MM-DD",
+          "required": true
+        },
+        {
+          "name": "count",
+          "type": "integer",
+          "description": "How many payments to fetch, 1 to 10 (default 5)",
+          "required": false
+        }
+      ],
+      "outputs": [
+        "transactions"
+      ],
+      "sensitive": true,
+      "locked": [
+        "card_last4",
+        "date_of_birth"
+      ],
+      "max_calls": 3
+    },
+    {
+      "name": "raise_dispute",
+      "description": "Raises a dispute for a payment the caller doesn't recognise and returns a reference number.",
+      "inputs": [
+        {
+          "name": "card_last4",
+          "type": "string",
+          "description": "Last 4 digits of the caller's card",
+          "required": true
+        },
+        {
+          "name": "date_of_birth",
+          "type": "string",
+          "description": "The caller's date of birth, YYYY-MM-DD",
+          "required": true
+        },
+        {
+          "name": "merchant",
+          "type": "string",
+          "description": "The merchant name as it appears on the statement",
+          "required": true
+        },
+        {
+          "name": "amount",
+          "type": "string",
+          "description": "The approximate amount",
+          "required": false
+        },
+        {
+          "name": "date",
+          "type": "string",
+          "description": "The approximate date of the payment",
+          "required": false
+        }
+      ],
+      "outputs": [
+        "reference",
+        "callback_within"
+      ],
+      "sensitive": true,
+      "locked": [
+        "card_last4",
+        "date_of_birth"
+      ],
+      "max_calls": 2
+    },
+    {
+      "name": "search_faq",
+      "description": "Answers general credit card questions from the help centre: fees, interest, minimum due, EMI, payments, statements, reward points, blocking a card.",
+      "inputs": [
+        {
+          "name": "question",
+          "type": "string",
+          "description": "The caller's question, in English",
+          "required": true
+        }
+      ],
+      "outputs": [
+        "answer"
+      ],
+      "sensitive": false,
+      "locked": [],
+      "max_calls": 5
+    },
+    {
+      "name": "find_branch",
+      "description": "Lists Demo Bank branches in a city.",
+      "inputs": [
+        {
+          "name": "city",
+          "type": "string",
+          "description": "The city, in English",
+          "required": true
+        }
+      ],
+      "outputs": [
+        "branches"
+      ],
+      "sensitive": false,
+      "locked": [],
+      "max_calls": 3
+    }
+  ]
+}

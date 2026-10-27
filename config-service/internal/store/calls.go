@@ -17,6 +17,14 @@ type CallStep struct {
 	Ms   int    `json:"ms"`
 }
 
+// CallTool is one use of an integration's tool: which, whether it worked and
+// how long it took. Never what was sent or what came back.
+type CallTool struct {
+	Tool string `json:"tool"` // "<integration>.<tool>"
+	OK   bool   `json:"ok"`
+	Ms   int    `json:"ms"`
+}
+
 type CallTurns struct {
 	Caller int `json:"caller"`
 	Agent  int `json:"agent"`
@@ -55,6 +63,7 @@ type Call struct {
 	DurationMs  int          `json:"duration_ms"`
 	Outcome     string       `json:"outcome"`
 	Steps       []CallStep   `json:"steps"`
+	Tools       []CallTool   `json:"tools"`
 	Turns       CallTurns    `json:"turns"`
 	LatencyMs   *CallLatency `json:"latency_ms"`
 	Usage       CallUsage    `json:"usage"`
@@ -71,6 +80,13 @@ func (s *Store) AddCall(ctx context.Context, c *Call) (created bool, err error) 
 	if err != nil {
 		return false, err
 	}
+	if c.Tools == nil {
+		c.Tools = []CallTool{}
+	}
+	tools, err := json.Marshal(c.Tools)
+	if err != nil {
+		return false, err
+	}
 	var p50, p95 sql.NullInt64
 	count := 0
 	if c.LatencyMs != nil {
@@ -81,11 +97,11 @@ func (s *Store) AddCall(ctx context.Context, c *Call) (created bool, err error) 
 	res, err := s.db.ExecContext(ctx, `
 		INSERT INTO calls (call_id, flow_id, flow_version, flow_source, channel, runtime, started_at,
 			duration_ms, outcome, steps, caller_turns, agent_turns, latency_p50_ms, latency_p95_ms,
-			latency_count, usage)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+			latency_count, usage, tools)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
 		ON CONFLICT (call_id) DO NOTHING`,
 		c.CallID, c.FlowID, c.FlowVersion, c.FlowSource, c.Channel, c.Runtime, c.StartedAt,
-		c.DurationMs, c.Outcome, string(steps), c.Turns.Caller, c.Turns.Agent, p50, p95, count, string(usage))
+		c.DurationMs, c.Outcome, string(steps), c.Turns.Caller, c.Turns.Agent, p50, p95, count, string(usage), string(tools))
 	if err != nil {
 		return false, err
 	}
@@ -98,7 +114,7 @@ func (s *Store) AddCall(ctx context.Context, c *Call) (created bool, err error) 
 func (s *Store) ListCalls(ctx context.Context, flowID, channel string, since time.Time, limit int) ([]Call, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT call_id, flow_id, flow_version, flow_source, channel, runtime, started_at, duration_ms,
-			outcome, steps, caller_turns, agent_turns, latency_p50_ms, latency_p95_ms, latency_count, usage
+			outcome, steps, caller_turns, agent_turns, latency_p50_ms, latency_p95_ms, latency_count, usage, tools
 		FROM calls
 		WHERE flow_id = $1 AND started_at >= $2 AND ($3 = '' OR channel = $3)
 		ORDER BY started_at DESC
@@ -112,10 +128,10 @@ func (s *Store) ListCalls(ctx context.Context, flowID, channel string, since tim
 		var c Call
 		var version, p50, p95 sql.NullInt64
 		var count int
-		var steps, usage []byte
+		var steps, usage, tools []byte
 		if err := rows.Scan(&c.CallID, &c.FlowID, &version, &c.FlowSource, &c.Channel, &c.Runtime,
 			&c.StartedAt, &c.DurationMs, &c.Outcome, &steps, &c.Turns.Caller, &c.Turns.Agent,
-			&p50, &p95, &count, &usage); err != nil {
+			&p50, &p95, &count, &usage, &tools); err != nil {
 			return nil, err
 		}
 		if version.Valid {
@@ -129,6 +145,9 @@ func (s *Store) ListCalls(ctx context.Context, flowID, channel string, since tim
 			return nil, err
 		}
 		if err := json.Unmarshal(usage, &c.Usage); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal(tools, &c.Tools); err != nil {
 			return nil, err
 		}
 		c.StartedAt = c.StartedAt.UTC()

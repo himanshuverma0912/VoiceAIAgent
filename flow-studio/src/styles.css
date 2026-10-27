@@ -19,6 +19,7 @@
   --agent: #3b6ea5;
   --collect: #8a5a00;
   --end: #7a3b62;
+  --api: #2f6b6b;
   --add: #dff0e1;
   --del: #f6dedb;
   --radius: 8px;
@@ -47,6 +48,7 @@
     --agent: #86b1e0;
     --collect: #e3b25a;
     --end: #d899c0;
+    --api: #7cc4c4;
     --add: #213824;
     --del: #43231f;
     color-scheme: dark;
@@ -376,3 +378,10 @@ textarea.describe { min-height: 260px; font-size: 13px; }
 .build-notes { margin: 6px 0 12px; padding-left: 18px; font-size: 13px; }
 .build-notes li { margin-bottom: 4px; }
 @media (max-width: 520px) { .mode-pick { grid-template-columns: 1fr; } }
+
+/* ── tools ── */
+.tool-inputs { display: grid; gap: 8px; }
+.tool-input { border-top: 1px dashed var(--line); padding-top: 8px; }
+.tool-input:first-child { border-top: 0; padding-top: 0; }
+.tool-input .hint { margin-bottom: 4px; }
+p.hint.bad, .hint .bad { color: var(--bad); }
