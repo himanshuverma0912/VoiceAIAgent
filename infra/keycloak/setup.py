@@ -11,11 +11,18 @@ Two realms:
   voice-platform  The platform's own realm. It trusts corp-idp over SAML and gives
                   Flow Studio and the config service OIDC tokens (easier for a
                   browser app and Go than SAML). Directory groups become:
-                    team-<name>          -> Keycloak group /teams/<name> (a flow team)
-                    role-flow-editor     -> realm role flow-editor     (save drafts)
-                    role-flow-publisher  -> realm role flow-publisher  (publish)
+                    team-<name>          -> Keycloak group /teams/<name>
+                    role-flow-editor     -> realm role flow-editor
+                    role-flow-publisher  -> realm role flow-publisher
                     role-platform-admin  -> realm role platform-admin  (everything)
                   Everyone gets "viewer".
+
+Workspaces: what people may do in Flow Studio is decided by their workspace
+memberships (maker, checker, owner), managed in Flow Studio, not here. Teams and
+roles from this file are used once, at a person's first sign-in, to give them
+their first memberships: each team becomes a workspace they're in, flow-editor
+makes them a maker there and flow-publisher a checker. platform-admin is the only
+role that keeps meaning afterwards.
 
 Swapping corp-idp for Entra ID later changes only the identity provider entry in
 voice-platform; Flow Studio and the config service stay the same.
@@ -49,10 +56,10 @@ IDP_ALIAS = "corp-idp"
 STUDIO_CLIENT = "flow-studio"
 API_AUDIENCE = "config-api"
 ROLES = {
-    "viewer": "See flows of your teams",
-    "flow-editor": "Create flows and save drafts for your teams",
-    "flow-publisher": "Publish flows of your teams (calls use them)",
-    "platform-admin": "All teams, phone numbers and the audit log",
+    "viewer": "Signed in to Flow Studio",
+    "flow-editor": "First sign-in: maker in their teams' workspaces",
+    "flow-publisher": "First sign-in: checker in their teams' workspaces",
+    "platform-admin": "All workspaces, phone numbers, model catalog and the audit log",
 }
 GRANTABLE_ROLES = ["flow-editor", "flow-publisher", "platform-admin"]  # viewer is automatic
 TEAM_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")

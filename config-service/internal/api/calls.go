@@ -10,7 +10,6 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/himanshuverma0912/VoiceAIAgent/config-service/internal/auth"
 	"github.com/himanshuverma0912/VoiceAIAgent/config-service/internal/store"
 )
 
@@ -176,7 +175,7 @@ func callQuery(w http.ResponseWriter, r *http.Request) (days int, channel string
 
 // GET /v1/flows/{flow_id}/calls?days=7&channel=phone&limit=50 — recent calls.
 func (s *Server) listCalls(w http.ResponseWriter, r *http.Request) {
-	f, ok := s.flowFor(w, r, auth.RoleViewer)
+	f, ok := s.flowFor(w, r, toView)
 	if !ok {
 		return
 	}
@@ -406,7 +405,7 @@ func summarise(calls []store.Call, days int, channel string, now time.Time) call
 
 // GET /v1/flows/{flow_id}/calls/summary?days=7&channel=phone
 func (s *Server) callSummary(w http.ResponseWriter, r *http.Request) {
-	f, ok := s.flowFor(w, r, auth.RoleViewer)
+	f, ok := s.flowFor(w, r, toView)
 	if !ok {
 		return
 	}

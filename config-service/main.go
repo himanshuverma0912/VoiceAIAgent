@@ -24,6 +24,14 @@
 //	LIVEKIT_API_SECRET
 //	LIVEKIT_AGENT_NAME  default VoiceAIAgentInbound
 //
+// The AI flow builder (turns a written description into a flow); off when unset:
+//
+//	LITELLM_URL         e.g. http://litellm:4000
+//	LITELLM_API_KEY     a LiteLLM key
+//	FLOW_BUILDER_MODEL  LiteLLM alias, default flow-builder (see infra/litellm-config.yaml)
+//
+// Call history is deleted after CALL_RETENTION_DAYS (default 90).
+//
 // `config-service -healthcheck` exits 0 if the service on this host is up
 // (used by Docker; the image has no curl).
 package main
@@ -46,6 +54,7 @@ import (
 
 	"github.com/himanshuverma0912/VoiceAIAgent/config-service/internal/api"
 	"github.com/himanshuverma0912/VoiceAIAgent/config-service/internal/auth"
+	"github.com/himanshuverma0912/VoiceAIAgent/config-service/internal/builder"
 	"github.com/himanshuverma0912/VoiceAIAgent/config-service/internal/livekit"
 	"github.com/himanshuverma0912/VoiceAIAgent/config-service/internal/store"
 )
@@ -136,6 +145,15 @@ func run(addr string) error {
 
 	st := store.New(db)
 
+	// The AI flow builder (Flow Studio's "Describe it"): LiteLLM and a model alias.
+	var flowBuilder *builder.Builder
+	if url, key := env("LITELLM_URL", ""), env("LITELLM_API_KEY", ""); url != "" && key != "" {
+		flowBuilder = builder.New(builder.Config{URL: url, APIKey: key, Model: env("FLOW_BUILDER_MODEL", "flow-builder")})
+		slog.Info("AI flow builder enabled", "model", flowBuilder.Model())
+	} else {
+		slog.Warn("LITELLM_URL / LITELLM_API_KEY not set: the AI flow builder is off")
+	}
+
 	// Call history is kept for CALL_RETENTION_DAYS (default 90), then deleted.
 	retention, err := strconv.Atoi(env("CALL_RETENTION_DAYS", "90"))
 	if err != nil || retention < 1 || retention > 730 {
@@ -145,7 +163,7 @@ func run(addr string) error {
 
 	srv := &http.Server{
 		Addr:              addr,
-		Handler:           (&api.Server{Store: st, AdminToken: admin, RuntimeToken: runtime, Users: users, LiveKit: lk}).Handler(),
+		Handler:           (&api.Server{Store: st, AdminToken: admin, RuntimeToken: runtime, Users: users, LiveKit: lk, Builder: flowBuilder}).Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      15 * time.Second,
