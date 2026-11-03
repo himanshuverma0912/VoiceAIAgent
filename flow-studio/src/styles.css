@@ -642,6 +642,10 @@ textarea.describe { min-height: 260px; font-size: 13px; }
 .tool-input .hint { margin-bottom: 4px; }
 p.hint.bad, .hint .bad { color: var(--bad); }
 
+/* ── resume ── */
+.keep-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 2px 12px; margin: 6px 0 4px; }
+.keep-list .check { margin-bottom: 4px; font-family: var(--mono); font-size: 12.5px; }
+
 /* ── sign in ── */
 .signin { min-height: 100%; position: relative; }
 button.corner { position: absolute; top: 16px; right: 16px; }

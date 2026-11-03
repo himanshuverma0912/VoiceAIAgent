@@ -238,6 +238,8 @@ export interface CallSummary {
   latency_ms: Stats | null;
   steps: { node: string; reached: number; avg_ms: number; ended_here: number; hung_up_here: number }[];
   tools?: { tool: string; uses: number; failed: number; avg_ms: number; p95_ms: number }[];
+  /** Dropped calls that left a point to pick up from, and calls that picked up from one. */
+  resume?: { saved: number; resumed: number };
   versions: {
     version: number | null;
     source: string;

@@ -1,5 +1,5 @@
 import { offeredTo, type CatalogEntry, type CatalogKind, type OfferedTool } from "../api";
-import { problemText, type Flow, type FlowSettings } from "../spec";
+import { BUILTIN_VARIABLES, problemText, type Flow, type FlowSettings } from "../spec";
 import { ToolUses } from "./Tools";
 import { Check, Field, VarText } from "./ui";
 
@@ -93,6 +93,9 @@ export function SettingsEditor(props: {
     </Field>
   );
   const nodeIds = Object.keys(flow.nodes);
+  // Values the flow defines (captured, collected, saved): the ones a resumed call can keep.
+  const builtins = new Set(BUILTIN_VARIABLES.map((v) => v.name));
+  const flowValues = vars.filter((v) => !builtins.has(v.name));
 
   return (
     <div>
@@ -188,6 +191,47 @@ export function SettingsEditor(props: {
           everyStep
           change={(uses) => change((f) => (uses.length ? (f.tools = uses) : delete f.tools))}
         />
+      </div>
+
+      <div className="section">
+        <h3 style={{ marginBottom: 6 }}>Resume dropped calls</h3>
+        <Check
+          label="If a caller hangs up mid-call and rings back within 15 minutes, offer to carry on from the same step"
+          checked={s.resume?.enabled ?? false}
+          disabled={!ed}
+          onChange={(v) => setSetting((x) => (v ? (x.resume = { ...x.resume, enabled: true }) : delete x.resume))}
+        />
+        {s.resume?.enabled && (
+          <>
+            <p className="hint" style={{ marginTop: 0 }}>
+              The agent asks “carry on or start over?”. A caller who had been verified verifies again, then goes straight back to
+              where they were. Phone calls only; kept encrypted for 15 minutes and used once.
+            </p>
+            <div className="field-label">Keep these answers for the call back (everything else is asked again)</div>
+            {flowValues.length === 0 && <p className="hint">This flow doesn't capture, collect or save any values.</p>}
+            <div className="keep-list">
+              {flowValues.map((v) => (
+                <Check
+                  key={v.name}
+                  label={v.name}
+                  checked={(s.resume?.keep ?? []).includes(v.name)}
+                  disabled={!ed}
+                  onChange={(on) =>
+                    setSetting((x) => {
+                      const keep = (x.resume?.keep ?? []).filter((k) => k !== v.name);
+                      x.resume = { ...x.resume, enabled: true, keep: on ? [...keep, v.name] : keep };
+                      if (!x.resume.keep?.length) delete x.resume.keep;
+                    })
+                  }
+                />
+              ))}
+            </div>
+            <p className="hint">
+              Keep what saves the caller repeating themselves (the issue, a merchant). Verification details are asked again
+              anyway, so don't keep them.
+            </p>
+          </>
+        )}
       </div>
 
       <div className="section">

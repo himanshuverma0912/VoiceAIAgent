@@ -6,6 +6,8 @@ What a record holds, and nothing else:
   - the steps it went through, with the time spent in each
   - the tools it used (bank API, MCP server): which, whether each worked, how long
   - how it ended (completed, caller hung up, ended early, time limit, error)
+  - whether it picked up from a dropped call, and whether it left a resume
+    point for the caller to pick up from (never where, or what was kept)
   - how many times each side spoke, and how fast the agent answered
   - usage totals (LLM tokens, seconds of speech-to-text, characters spoken)
 
@@ -72,6 +74,8 @@ class CallRecorder:
         self._time_limit = False
         self._close_reason: str | None = None
         self._error = False
+        self._resumed = False
+        self._resume_saved = False
 
     # ── things that happen during the call ──
 
@@ -82,6 +86,14 @@ class CallRecorder:
         """A tool call: its name, whether it worked and how long it took (never inputs or answers)."""
         if len(self._tools) < 200:
             self._tools.append({"tool": use.tool, "ok": bool(use.ok), "ms": max(0, int(use.ms))})
+
+    def resumed(self) -> None:
+        """This call picked up where a dropped call had left off."""
+        self._resumed = True
+
+    def resume_saved(self) -> None:
+        """The caller hung up mid-flow and can pick up again on a call back."""
+        self._resume_saved = True
 
     def agent_ended_call(self) -> None:
         self._agent_ended = True
@@ -138,7 +150,7 @@ class CallRecorder:
                 "p95": round(_percentile(self._latencies, 0.95) * 1000),
                 "count": len(self._latencies),
             }
-        return {
+        record = {
             "call_id": self.call_id,
             "flow_id": self.flow_id,
             "flow_version": self.flow_version,
@@ -154,6 +166,13 @@ class CallRecorder:
             "latency_ms": latency,
             "usage": _usage_totals(usage),
         }
+        # Only when true, so a config service from before drop-resume (which
+        # refuses unknown fields) still takes ordinary calls.
+        if self._resumed:
+            record["resumed"] = True
+        if self._resume_saved:
+            record["resume_saved"] = True
+        return record
 
 
 def _usage_totals(usage: Any) -> dict:

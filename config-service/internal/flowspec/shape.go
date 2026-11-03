@@ -39,6 +39,7 @@ type Flow struct {
 	Guardrails           []string
 	Greeting             string
 	AllowEndCallAnywhere bool
+	ResumeKeep           []string  // settings.resume.keep: values kept for a resumed call
 	Tools                []ToolUse // offered on every agent step
 	StartNode            string
 	Nodes                []*Node // in file order
@@ -380,7 +381,7 @@ func (s *shape) flow(v any) *Flow {
 		f.AllowEndCallAnywhere, _ = s.boolean("allow_end_call_anywhere", v)
 	}
 	if v, ok := s.field("", o, "settings", false); ok {
-		s.settings(v)
+		f.ResumeKeep = s.settings(v)
 	}
 	if v, ok := o.Get("tools"); ok {
 		f.Tools = s.toolUses("tools", v)
@@ -400,11 +401,11 @@ func (s *shape) flow(v any) *Flow {
 	return f
 }
 
-func (s *shape) settings(v any) {
+func (s *shape) settings(v any) (resumeKeep []string) {
 	const loc = "settings"
-	o, ok := s.model(loc, v, "FlowSettings", "language", "llm_model", "llm_temperature", "stt_model", "tts_voice_id")
+	o, ok := s.model(loc, v, "FlowSettings", "language", "llm_model", "llm_temperature", "stt_model", "tts_voice_id", "resume")
 	if !ok {
-		return
+		return nil
 	}
 	if v, ok := o.Get("language"); ok {
 		if lang, ok := s.str(at(loc, "language"), v, false); ok && !languageRE.MatchString(lang) {
@@ -417,6 +418,32 @@ func (s *shape) settings(v any) {
 	}
 	s.optionalString(loc, o, "stt_model", false)
 	s.optionalString(loc, o, "tts_voice_id", false)
+	if v, ok := o.Get("resume"); ok {
+		resumeKeep = s.resume(at(loc, "resume"), v)
+	}
+	return resumeKeep
+}
+
+// resume checks settings.resume: {"enabled": bool, "keep": [identifiers]}.
+func (s *shape) resume(loc string, v any) []string {
+	o, ok := s.model(loc, v, "ResumeSettings", "enabled", "keep")
+	if !ok {
+		return nil
+	}
+	if v, ok := o.Get("enabled"); ok {
+		s.boolean(at(loc, "enabled"), v)
+	}
+	var keep []string
+	if v, ok := o.Get("keep"); ok {
+		if items, ok := s.list(at(loc, "keep"), v, false); ok {
+			for i, item := range items {
+				if name, ok := s.identifier(idx(at(loc, "keep"), i), item); ok {
+					keep = append(keep, name)
+				}
+			}
+		}
+	}
+	return keep
 }
 
 func (s *shape) node(loc, id string, v any) *Node {

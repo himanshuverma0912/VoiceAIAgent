@@ -36,6 +36,13 @@ workspaces may use them, which tools). A flow refers to a tool as
 Which tools exist, and which need a verified caller, is checked by the config
 service against its integrations list; this module checks the shape.
 
+Resuming dropped calls
+----------------------
+settings.resume: {"enabled": true, "keep": ["merchant", ...]} lets a caller
+who hangs up mid-flow carry on from the same step if they call back within
+15 minutes (see resume.py). "keep" lists the captured, collected or saved
+values to keep for the call back; everything else is asked again.
+
 Variables
 ---------
 Text fields can use {{variable}}. Built-ins: caller_number, dialed_number,
@@ -242,12 +249,20 @@ class EndNode(_Strict):
 Node = Annotated[Union[AgentNode, CollectNode, ApiNode, EndNode], Field(discriminator="type")]
 
 
+class ResumeSettings(_Strict):
+    enabled: bool = Field(default=False, description="Let a caller who hung up mid-flow carry on within 15 minutes")
+    keep: list[Identifier] = Field(
+        default_factory=list, description="Values (captured, collected or saved) kept for the call back"
+    )
+
+
 class FlowSettings(_Strict):
     language: str = Field(default="hi", pattern=r"^[a-z]{2}(-[A-Za-z]{2})?$|^multi$")
     llm_model: str | None = Field(default=None, description="LiteLLM alias, e.g. 'voice-fast'")
     llm_temperature: float = Field(default=0, ge=0, le=2)
     stt_model: str | None = Field(default=None, description="Deepgram model, e.g. 'nova-3'")
     tts_voice_id: str | None = Field(default=None, description="Cartesia voice id")
+    resume: ResumeSettings = Field(default_factory=ResumeSettings)
 
 
 class Flow(_Strict):
@@ -433,6 +448,15 @@ def check_flow(flow: Flow) -> list[str]:
         for var in VARIABLE_RE.findall(text):
             if var not in known:
                 problems.append(_unknown_variable(where, var))
+
+    # Values kept for a resumed call must be ones the flow defines.
+    kept: set[str] = set()
+    for i, name in enumerate(flow.settings.resume.keep):
+        if name in kept:
+            problems.append(f"settings.resume.keep[{i}]: '{name}' is already in the list")
+        elif name not in seen:
+            problems.append(f"settings.resume.keep[{i}]: '{name}' isn't a value this flow captures, collects or saves")
+        kept.add(name)
     return problems
 
 

@@ -108,6 +108,7 @@ All `/v1` routes need `Authorization: Bearer <token>`. Through Caddy they're at
 | `GET /internal/v1/resolve?number=...` | RUNTIME_TOKEN | For the agent: the flow a number runs now, with the integrations it uses; ETag / 304 |
 | `GET /internal/v1/flows/{flow_id}/draft` | RUNTIME_TOKEN | For the agent in a test call: the saved draft (422 if it has problems), with its integrations at their test URLs |
 | `POST /internal/v1/calls` | RUNTIME_TOKEN | For the agent when a call ends: its call-history record (sending it again is a no-op) |
+| `PUT /internal/v1/resume/{key}`, `POST /internal/v1/resume/{key}/claim` | RUNTIME_TOKEN | For the agent: drop-resume points (see Resuming dropped calls) |
 
 `?team=` still works wherever `?workspace=` does, for older scripts.
 
@@ -162,6 +163,37 @@ how long it took (Flow Studio shows this under Calls → Tools).
 `/mcp`, REST at `/api/<tool>`), started by `infra/docker-compose.yml`;
 `infra/integrations/demo_bank.json` registers it and
 `flows/credit-card-helpline.json` is a flow that uses it.
+
+## Resuming dropped calls
+
+A flow with `"settings": {"resume": {"enabled": true, "keep": [...]}}`
+(Studio: Settings → Resume dropped calls) lets a caller who hangs up in the
+middle pick up from the same step by calling the same flow back within **15
+minutes**. The agent asks first: "carry on where we were, or start over?".
+
+- **What's kept:** the step the caller reached, and only the values listed in
+  `keep` (captured, collected or saved by the flow). Never what was said.
+- **Verification isn't carried over:** caller ID can be spoofed, so if the
+  caller had been verified they verify again, then go straight back to the
+  step they'd reached. A call never resumes inside an API step (that could
+  repeat an action); it goes back to the conversation step before it.
+- **Nothing readable here:** the agent seals the point with AES-GCM using
+  `RESUME_KEY` from its own `.env` and files it under an HMAC of the caller's
+  number. This service stores the ciphertext and the hash, for 15 minutes,
+  and deletes it when it's claimed (it's returned once) or expires.
+- Studio test calls and withheld numbers never resume. If the flow was
+  republished and the step is gone, the call starts fresh.
+
+| Endpoint | Who | What |
+|---|---|---|
+| `PUT /internal/v1/resume/{key}` | RUNTIME_TOKEN | Keep a point: `{"flow_id", "flow_version", "sealed"}` (replaces an earlier one) |
+| `POST /internal/v1/resume/{key}/claim` | RUNTIME_TOKEN | `{"flow_id"}` → the point, once (404 if none, expired or another flow's) |
+
+Call history counts dropped calls that left a point and calls that resumed
+(`GET …/calls/summary` → `"resume": {"saved", "resumed"}`).
+
+Deploy this service before an agent with drop-resume: an older service
+refuses call records that mention it.
 
 ## AI flow builder
 

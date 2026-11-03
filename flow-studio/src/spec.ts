@@ -89,6 +89,8 @@ export interface FlowSettings {
   llm_temperature?: number;
   stt_model?: string | null;
   tts_voice_id?: string | null;
+  /** Drop-resume: a caller who hangs up mid-flow can carry on within 15 minutes. */
+  resume?: { enabled?: boolean; keep?: string[] };
 }
 
 export interface Flow {

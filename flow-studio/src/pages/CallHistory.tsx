@@ -192,6 +192,12 @@ function Report({ summary, calls }: { summary: CallSummary; calls: Call[] }) {
             </div>
           ))}
         </div>
+        {summary.resume && (summary.resume.saved > 0 || summary.resume.resumed > 0) && (
+          <p className="muted small-text" style={{ margin: "12px 0 0" }}>
+            Dropped mid-flow and could pick up again: <strong>{summary.resume.saved}</strong> · Picked up where a dropped call
+            left off: <strong>{summary.resume.resumed}</strong>
+          </p>
+        )}
       </section>
 
       <section className="card calls-section">

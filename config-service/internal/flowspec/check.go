@@ -354,6 +354,18 @@ func checkFlow(f *Flow) []string {
 			}
 		}
 	}
+
+	// Values kept for a resumed call must be ones the flow defines.
+	kept := map[string]bool{}
+	for i, name := range f.ResumeKeep {
+		switch {
+		case kept[name]:
+			add("settings.resume.keep[%d]: '%s' is already in the list", i, name)
+		case seen[name] == "":
+			add("settings.resume.keep[%d]: '%s' isn't a value this flow captures, collects or saves", i, name)
+		}
+		kept[name] = true
+	}
 	return problems
 }
 
