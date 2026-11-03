@@ -118,6 +118,8 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /internal/v1/resolve", requireToken(s.RuntimeToken, http.HandlerFunc(s.resolve)))
 	mux.Handle("GET /internal/v1/flows/{flow_id}/draft", requireToken(s.RuntimeToken, http.HandlerFunc(s.internalDraft)))
 	mux.Handle("POST /internal/v1/calls", requireToken(s.RuntimeToken, http.HandlerFunc(s.addCall)))
+	mux.Handle("PUT /internal/v1/resume/{key}", requireToken(s.RuntimeToken, http.HandlerFunc(s.putResume)))
+	mux.Handle("POST /internal/v1/resume/{key}/claim", requireToken(s.RuntimeToken, http.HandlerFunc(s.claimResume)))
 	return logRequests(mux)
 }
 

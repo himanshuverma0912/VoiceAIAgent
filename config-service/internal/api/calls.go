@@ -237,6 +237,13 @@ type toolStats struct {
 	P95Ms  int    `json:"p95_ms"`
 }
 
+// resumeStats: dropped calls that left a point to pick up from, and calls
+// that picked up from one.
+type resumeStats struct {
+	Saved   int `json:"saved"`
+	Resumed int `json:"resumed"`
+}
+
 type versionStats struct {
 	Version       *int   `json:"version"` // null: a draft or the fallback file
 	Source        string `json:"source"`
@@ -263,6 +270,7 @@ type callSummary struct {
 	Latency   *durationStats   `json:"latency_ms"` // p50: typical reply; p95: slow replies
 	Steps     []stepStats      `json:"steps"`
 	Tools     []toolStats      `json:"tools"`
+	Resume    resumeStats      `json:"resume"`
 	Versions  []versionStats   `json:"versions"`
 	PerDay    []dayStats       `json:"per_day"`
 	Usage     store.CallUsage  `json:"usage"`
@@ -327,6 +335,12 @@ func summarise(calls []store.Call, days int, channel string, now time.Time) call
 		turns.Caller += c.Turns.Caller
 		turns.Agent += c.Turns.Agent
 
+		if c.ResumeSaved {
+			out.Resume.Saved++
+		}
+		if c.Resumed {
+			out.Resume.Resumed++
+		}
 		for _, t := range c.Tools {
 			toolMs[t.Tool] = append(toolMs[t.Tool], t.Ms)
 			if !t.OK {

@@ -314,6 +314,19 @@ CASES += [
     ),
 ]
 
+RESUME = ["settings", "resume"]
+CASES += [
+    case("valid resume", set_path(RESUME, {"enabled": True, "keep": ["topic", "city"]})),
+    case("resume switched off", set_path(RESUME, {"enabled": False})),
+    case("resume keeps an unknown value", set_path(RESUME, {"enabled": True, "keep": ["topic", "pin_code"]})),
+    case("resume keeps a value twice", set_path(RESUME, {"enabled": True, "keep": ["city", "city"]})),
+    case("resume keeps a built-in", set_path(RESUME, {"enabled": True, "keep": ["caller_number"]})),
+    case("resume keep bad name", set_path(RESUME, {"keep": ["Full Name"]})),
+    case("resume enabled not a boolean", set_path(RESUME, {"enabled": "yes"})),
+    case("resume unknown key", set_path(RESUME, {"enabled": True, "minutes": 30})),
+    case("resume is a list", set_path(RESUME, [])),
+]
+
 CASES.append({"name": "top level is a list", "flow": []})
 
 

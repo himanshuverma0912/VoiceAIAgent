@@ -8,6 +8,11 @@ flow the dialled number runs (CONFIG_SERVICE_URL in .env), so a published change
 applies from the next call. Without the config service, or when it can't answer,
 FLOW_FILE in .env is used (default: flows/complaint-helpline.json).
 
+Dropped calls: if the flow allows it (settings.resume), a caller who hangs up
+mid-flow can pick up from the same step by calling back within 15 minutes.
+The point is kept, sealed with RESUME_KEY, in the config service (see
+flow_engine/resume.py).
+
 Test calls from Flow Studio ("Talk to this draft") come from a browser instead
 of a phone: the job metadata says {"kind": "studio_test", "flow_id": ...}, and
 the agent runs that flow's current draft for at most 5 minutes.
@@ -44,9 +49,10 @@ from livekit.agents import (
 from livekit.plugins import cartesia, deepgram, noise_cancellation, openai
 
 from flow_engine import Flow, load_flow
-from flow_engine.calllog import CallRecorder, send_record
+from flow_engine.calllog import CALLER_HUNG_UP, CallRecorder, send_record
 from flow_engine.language import LanguageHint
-from flow_engine.runtime import CallState, default_end_call, start_agent
+from flow_engine.resume import ResumeStore, choose_point, load_secret
+from flow_engine.runtime import CallState, default_end_call, resume_agent, start_agent
 from flow_engine.spec import EndNode
 from flow_engine.source import FlowSource
 from flow_engine.tools import ToolCaller
@@ -83,6 +89,10 @@ FLOWS = FlowSource(
     # last known flow if the config service is down.
     cache_dir=_env("FLOW_CACHE_DIR", "/tmp/flow-cache"),
 )
+
+# Drop-resume points, kept by the config service, sealed with RESUME_KEY (32
+# random bytes: `openssl rand -base64 32`). Not set: no call ever resumes.
+RESUME = ResumeStore(url=_env("CONFIG_SERVICE_URL"), token=_env("CONFIG_SERVICE_TOKEN"), secret=load_secret(_env("RESUME_KEY")))
 
 # Cartesia voice used when the flow doesn't set settings.tts_voice_id.
 CARTESIA_VOICE_ID = _env("CARTESIA_VOICE_ID", "9626c31c-bec5-4cca-baa8-f8ba9e84c8bc")
@@ -291,6 +301,16 @@ async def entrypoint(ctx: agents.JobContext) -> None:
         end_call=lambda goodbye, desc: default_end_call(goodbye, desc, on_called=recorder.agent_ended_call),
         tools=tools,
     )
+    # Drop-resume: phone calls only, when the flow allows it. A point left by this
+    # caller's dropped call (within 15 minutes) is claimed, which deletes it.
+    can_resume = not studio_test and flow.settings.resume.enabled and bool(caller_number)
+    if can_resume and not RESUME.enabled:
+        logger.warning("this flow resumes dropped calls, but RESUME_KEY or the config service isn't set up; it won't")
+        can_resume = False
+    point = await RESUME.claim(http, flow, caller_number) if can_resume else None
+    if point:
+        recorder.resumed()
+
     logger.info(
         "call started",
         extra={
@@ -299,6 +319,7 @@ async def entrypoint(ctx: agents.JobContext) -> None:
             "flow_source": resolved.source,
             "draft_checksum": resolved.checksum,
             "integrations": sorted(resolved.integrations),
+            "resumed": point is not None,
         },
     )
 
@@ -350,15 +371,24 @@ async def entrypoint(ctx: agents.JobContext) -> None:
 
     recorder.attach(session)
 
-    async def send_call_record() -> None:
+    async def end_of_call() -> None:
+        # The caller hung up mid-flow: leave a point to pick up from on a call back.
+        if can_resume and recorder.outcome() == CALLER_HUNG_UP:
+            verified = bool(state.tools and state.tools.verified)
+            resume_at = choose_point(flow, state.path, state.values, verified, state.resume_then, state.resume_point)
+            if resume_at:
+                async with aiohttp.ClientSession() as fresh:  # the job's own session may be closing
+                    if await RESUME.save(fresh, flow.flow_id, resolved.version, caller_number, resume_at):
+                        recorder.resume_saved()
         await send_record(_env("CONFIG_SERVICE_URL"), _env("CONFIG_SERVICE_TOKEN"), recorder.record(session.usage))
 
-    ctx.add_shutdown_callback(send_call_record)
+    ctx.add_shutdown_callback(end_of_call)
 
     # The flow's start node becomes the first agent; it plays the flow's greeting.
+    # A resumed call starts by asking "carry on or start over?" instead.
     await session.start(
         room=ctx.room,
-        agent=start_agent(state),
+        agent=resume_agent(state, point) if point else start_agent(state),
         # Don't upload this call's audio, transcript, traces or logs to LiveKit Cloud.
         record=False,
         room_options=room_io.RoomOptions(

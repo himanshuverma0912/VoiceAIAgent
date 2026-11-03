@@ -160,6 +160,7 @@ func run(addr string) error {
 		return errors.New("CALL_RETENTION_DAYS must be a number of days between 1 and 730")
 	}
 	go purgeOldCalls(ctx, st, retention)
+	go purgeResumePoints(ctx, st)
 
 	srv := &http.Server{
 		Addr:              addr,
@@ -198,6 +199,21 @@ func purgeOldCalls(ctx context.Context, st *store.Store, days int) {
 		case <-ctx.Done():
 			return
 		case <-time.After(6 * time.Hour):
+		}
+	}
+}
+
+// purgeResumePoints deletes drop-resume points once they expire (15 minutes);
+// claiming already ignores expired ones, this just doesn't keep them.
+func purgeResumePoints(ctx context.Context, st *store.Store) {
+	for {
+		if _, err := st.PurgeResume(ctx, time.Now()); err != nil && ctx.Err() == nil {
+			slog.Error("couldn't delete expired resume points", "error", err)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(time.Minute):
 		}
 	}
 }

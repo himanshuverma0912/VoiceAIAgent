@@ -23,6 +23,12 @@ Tools (see tools.py): the flow's "tools" are offered on every agent step and
 a node's "tools" on that step. Inputs the flow sets are filled in from
 {{variables}} and hidden from the LLM.
 
+Resuming (see resume.py): a call that picks up after a drop starts with
+ResumeAgent, which welcomes the caller back and asks whether to carry on or
+start over. Carrying on goes to the saved step; if the caller had been
+verified, that's the step before verification, and the verifying API step
+then goes back to where they were instead of its usual "next".
+
 Every node's instructions are built the same way: persona, guardrails,
 values collected so far, then the node's own instructions, with
 {{variables}} filled in.
@@ -69,6 +75,7 @@ from .spec import (
     Flow,
     ToolUse,
 )
+from .resume import ResumePoint
 from .tools import ToolCaller, ToolFailed, for_llm, json_schema
 
 logger = logging.getLogger("flow_engine")
@@ -149,6 +156,10 @@ class CallState:
     on_node: Callable[[str], None] | None = None
     # Calls the flow's integrations (None: the flow uses none, or none are available).
     tools: ToolCaller | None = None
+    # A resumed call: the point it picked up from, and where the verifying step
+    # sends the caller once they've verified again (instead of its "next").
+    resume_point: ResumePoint | None = None
+    resume_then: str | None = None
 
     def variables(self) -> dict[str, str]:
         now = datetime.now(IST)
@@ -410,6 +421,10 @@ class ApiAgent(_NodeMixin, Agent):
                 self.state.tools.verified = True
                 logger.info("caller verified", extra={"node": self.node_id})
         target = self.node.next if ok else self.node.on_error
+        if ok and self.node.verifies and self.state.resume_then:
+            # A resumed call: back to the step the caller had reached before the drop.
+            target, self.state.resume_then = self.state.resume_then, None
+            logger.info("resumed call verified again", extra={"to": target})
         logger.info("flow transition", extra={"from": self.node_id, "to": target, "ok": ok})
         self.session.update_agent(build_node_agent(self.state, target, _handoff_ctx(self)))
 
@@ -441,6 +456,57 @@ class EndAgent(_NodeMixin, Agent):
         self._entered()
         await self._greet_once()
         self.session.generate_reply(tool_choice={"type": "function", "function": {"name": "end_call"}})
+
+
+# ── A resumed call ────────────────────────────────────────────────────────────
+
+RESUME_ASK = (
+    "This caller rang a few minutes ago and the line dropped. You had got to this part of the "
+    "conversation:\n{about}\n\n"
+    "Welcome them back in one or two short sentences, say in a few words what you were helping "
+    "with, and ask whether they'd like to carry on from there or start over. Don't ask for any "
+    "details yet. When they answer, call continue_previous or start_over."
+)
+
+
+class ResumeAgent(_NodeMixin, Agent):
+    """The first agent of a resumed call: asks "carry on or start over?"."""
+
+    def __init__(self, state: CallState, point: ResumePoint) -> None:
+        self.state, self.node_id, self.point = state, "resume", point
+        node = state.flow.nodes[point.then or point.start]
+        about = state.render(node.instructions).strip()
+        if len(about) > 600:
+            about = about[:600].rsplit(" ", 1)[0] + "…"
+
+        @function_tool(name="continue_previous", description="The caller wants to carry on from where the call dropped.")
+        async def continue_previous(context: RunContext) -> Agent:
+            state.resume_then = point.then
+            logger.info("resumed call: carrying on", extra={"to": point.start, "then": point.then})
+            return build_node_agent(state, point.start, _handoff_ctx(self))
+
+        @function_tool(name="start_over", description="The caller wants to start over, or is calling about something else.")
+        async def start_over(context: RunContext) -> Agent:
+            state.values.clear()
+            state.resume_point = state.resume_then = None
+            logger.info("resumed call: starting over")
+            return build_node_agent(state, state.flow.start_node, _handoff_ctx(self))
+
+        super().__init__(
+            instructions=compose_instructions(state, "resume", RESUME_ASK.format(about=about)),
+            tools=[continue_previous, start_over, *exit_tools(state)],
+        )
+
+    async def on_enter(self) -> None:
+        await self._greet_once()
+        self.session.generate_reply()
+
+
+def resume_agent(state: CallState, point: ResumePoint) -> Agent:
+    """Start a resumed call: the kept values are known from the start."""
+    state.resume_point = point
+    state.values.update(point.values)
+    return ResumeAgent(state, point)
 
 
 # ── Collect node ──────────────────────────────────────────────────────────────

@@ -5,3 +5,5 @@
 livekit-agents[deepgram,openai,cartesia,mcp]~=1.8.8
 livekit-plugins-noise-cancellation~=0.3.2
 python-dotenv~=1.0
+# Seals drop-resume points (AES-GCM; see flow_engine/resume.py).
+cryptography~=50.0

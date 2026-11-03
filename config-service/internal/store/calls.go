@@ -64,6 +64,8 @@ type Call struct {
 	Outcome     string       `json:"outcome"`
 	Steps       []CallStep   `json:"steps"`
 	Tools       []CallTool   `json:"tools"`
+	Resumed     bool         `json:"resumed"`      // picked up from a dropped call
+	ResumeSaved bool         `json:"resume_saved"` // dropped mid-flow; left a point to pick up from
 	Turns       CallTurns    `json:"turns"`
 	LatencyMs   *CallLatency `json:"latency_ms"`
 	Usage       CallUsage    `json:"usage"`
@@ -97,11 +99,12 @@ func (s *Store) AddCall(ctx context.Context, c *Call) (created bool, err error) 
 	res, err := s.db.ExecContext(ctx, `
 		INSERT INTO calls (call_id, flow_id, flow_version, flow_source, channel, runtime, started_at,
 			duration_ms, outcome, steps, caller_turns, agent_turns, latency_p50_ms, latency_p95_ms,
-			latency_count, usage, tools)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+			latency_count, usage, tools, resumed, resume_saved)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
 		ON CONFLICT (call_id) DO NOTHING`,
 		c.CallID, c.FlowID, c.FlowVersion, c.FlowSource, c.Channel, c.Runtime, c.StartedAt,
-		c.DurationMs, c.Outcome, string(steps), c.Turns.Caller, c.Turns.Agent, p50, p95, count, string(usage), string(tools))
+		c.DurationMs, c.Outcome, string(steps), c.Turns.Caller, c.Turns.Agent, p50, p95, count, string(usage), string(tools),
+		c.Resumed, c.ResumeSaved)
 	if err != nil {
 		return false, err
 	}
@@ -114,7 +117,8 @@ func (s *Store) AddCall(ctx context.Context, c *Call) (created bool, err error) 
 func (s *Store) ListCalls(ctx context.Context, flowID, channel string, since time.Time, limit int) ([]Call, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT call_id, flow_id, flow_version, flow_source, channel, runtime, started_at, duration_ms,
-			outcome, steps, caller_turns, agent_turns, latency_p50_ms, latency_p95_ms, latency_count, usage, tools
+			outcome, steps, caller_turns, agent_turns, latency_p50_ms, latency_p95_ms, latency_count, usage, tools,
+			resumed, resume_saved
 		FROM calls
 		WHERE flow_id = $1 AND started_at >= $2 AND ($3 = '' OR channel = $3)
 		ORDER BY started_at DESC
@@ -131,7 +135,7 @@ func (s *Store) ListCalls(ctx context.Context, flowID, channel string, since tim
 		var steps, usage, tools []byte
 		if err := rows.Scan(&c.CallID, &c.FlowID, &version, &c.FlowSource, &c.Channel, &c.Runtime,
 			&c.StartedAt, &c.DurationMs, &c.Outcome, &steps, &c.Turns.Caller, &c.Turns.Agent,
-			&p50, &p95, &count, &usage, &tools); err != nil {
+			&p50, &p95, &count, &usage, &tools, &c.Resumed, &c.ResumeSaved); err != nil {
 			return nil, err
 		}
 		if version.Valid {
