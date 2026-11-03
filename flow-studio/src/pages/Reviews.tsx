@@ -2,7 +2,7 @@
 import { useEffect, useState } from "react";
 import { api, can, type FlowSummary, type Me, type Review } from "../api";
 import { ReviewDialog } from "../components/Review";
-import { timeAgo, toast } from "../components/ui";
+import { PageHero, timeAgo, toast } from "../components/ui";
 import { Link, usePath } from "../router";
 import { workspaceNames } from "./FlowList";
 
@@ -87,10 +87,9 @@ export function Reviews({ me }: { me: Me }) {
 
   return (
     <main className="page">
-      <h1>Reviews</h1>
-      <p className="muted" style={{ margin: "4px 0 0" }}>
+      <PageHero title="Reviews">
         Makers submit changes; a checker in the same workspace, who isn't the maker, approves them to make them live.
-      </p>
+      </PageHero>
       {error && <div className="notice bad" style={{ marginTop: 16 }}>{error}</div>}
       {!reviews && !error && <p className="muted">Loading…</p>}
       {reviews && reviews.length === 0 && (

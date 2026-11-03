@@ -2,7 +2,7 @@
 // or an MCP server), and their tools. Makers then add those tools to flows.
 import { useEffect, useState } from "react";
 import { ApiError, api, type Integration, type IntegrationInput, type IntegrationTool } from "../api";
-import { Check, Dialog, Field, timeAgo, toast } from "../components/ui";
+import { Check, Dialog, Field, PageHero, timeAgo, toast } from "../components/ui";
 
 const ID_RE = /^[a-z][a-z0-9_]{0,31}$/;
 
@@ -44,19 +44,17 @@ export function Integrations() {
 
   return (
     <main className="page wide">
-      <div className="row wrap">
-        <div className="grow">
-          <h1>Integrations</h1>
-          <p className="muted" style={{ margin: "4px 0 0" }}>
-            The bank systems flows may call during a call: REST APIs and MCP servers. Makers add their tools to steps; tools that
-            need a verified caller only work after a step that verifies the caller, and inputs marked as set by the flow are
-            never chosen by the AI.
-          </p>
-        </div>
-        <button className="primary" onClick={() => setEditing("new")}>
-          Add integration
-        </button>
-      </div>
+      <PageHero
+        title="Integrations"
+        actions={
+          <button className="primary" onClick={() => setEditing("new")}>
+            Add integration
+          </button>
+        }
+      >
+        The bank systems flows may call during a call: REST APIs and MCP servers. Tools that need a verified caller only work after a step
+        that verifies the caller, and inputs set by the flow are never chosen by the AI.
+      </PageHero>
       {error && <div className="notice bad" style={{ marginTop: 16 }}>{error}</div>}
       {!list && !error && <p className="muted">Loading…</p>}
       {list && list.length === 0 && (

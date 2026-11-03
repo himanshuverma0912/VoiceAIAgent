@@ -2,7 +2,7 @@
 // Settings; a draft naming anything else can't be test-called or published.
 import { useEffect, useState } from "react";
 import { ApiError, api, type CatalogEntry, type CatalogInput, type CatalogKind } from "../api";
-import { Dialog, Field, toast, timeAgo } from "../components/ui";
+import { Dialog, Field, PageHero, toast, timeAgo } from "../components/ui";
 
 const KINDS: { kind: CatalogKind; title: string; idLabel: string; idHint: string; about: string }[] = [
   {
@@ -74,11 +74,10 @@ export function ModelCatalog() {
 
   return (
     <main className="page wide">
-      <h1>Model catalog</h1>
-      <p className="muted" style={{ margin: "4px 0 0" }}>
-        The models makers can choose in a flow's Settings. A flow naming anything else, something switched off, or something not
-        offered to its workspace can't be test-called or published. Flows that leave a setting empty use the agent's default.
-      </p>
+      <PageHero title="Model catalog">
+        The models makers can choose in a flow's Settings. A flow naming anything else, something switched off, or something not offered to
+        its workspace can't be test-called or published. Flows that leave a setting empty use the agent's default.
+      </PageHero>
       {error && <div className="notice bad" style={{ marginTop: 16 }}>{error}</div>}
       {!entries && !error && <p className="muted">Loading…</p>}
       {entries &&

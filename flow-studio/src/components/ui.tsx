@@ -28,6 +28,20 @@ export function Dialog(props: {
   );
 }
 
+/** The banner at the top of a page: a large title, a line about the page, and its main actions. */
+export function PageHero(props: { title: ReactNode; children?: ReactNode; actions?: ReactNode; back?: ReactNode }) {
+  return (
+    <header className="hero">
+      <div className="hero-text">
+        {props.back && <div className="hero-back">{props.back}</div>}
+        <h1>{props.title}</h1>
+        {props.children && <p>{props.children}</p>}
+      </div>
+      {props.actions && <div className="hero-actions">{props.actions}</div>}
+    </header>
+  );
+}
+
 let showToast: (msg: string) => void = () => {};
 export const toast = (msg: string) => showToast(msg);
 
