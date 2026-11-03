@@ -1,8 +1,20 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ApiError, api, can, type Build, type FlowSummary, type Me } from "../api";
-import { Dialog, Field, timeAgo } from "../components/ui";
+import { IconClock, IconCross, IconDraft, IconPhone, IconSearch, IconStack, IconCheck, IconVersion } from "../components/Icons";
+import { Dialog, Field, PageHero, timeAgo } from "../components/ui";
 import { Link, navigate } from "../router";
 import { IDENTIFIER_HINT, IDENTIFIER_RE, newFlowTemplate, serialize } from "../spec";
+
+type Filter = "live" | "review" | "draft" | "problems" | "all";
+
+/** The status chips above the list (the counts are over every flow). */
+const FILTERS: Record<Filter, { label: string; icon: ReactNode; test: (f: FlowSummary) => boolean }> = {
+  live: { label: "Live", icon: <IconCheck size={13} />, test: (f) => f.latest_version !== null },
+  review: { label: "Waiting for review", icon: <IconClock size={13} />, test: (f) => f.pending_review !== null },
+  draft: { label: "Not published", icon: <IconDraft size={13} />, test: (f) => f.latest_version === null },
+  problems: { label: "Has problems", icon: <IconCross size={13} />, test: (f) => f.draft_valid === false },
+  all: { label: "All", icon: <IconStack size={13} />, test: () => true },
+};
 
 /** Workspace id → display name, from the person's memberships (admins may see others too). */
 export function workspaceNames(me: Me): Record<string, string> {
@@ -20,29 +32,55 @@ export function FlowList({ me }: { me: Me }) {
     api.flows().then(setFlows, (e) => setError((e as Error).message));
   }, []);
 
-  // One group per workspace, in the order of the person's memberships, then any others (admins).
+  const [filter, setFilter] = useState<Filter>("all");
+  const [query, setQuery] = useState("");
+
+  // One group per workspace, in the order of the person's memberships, then any
+  // others (admins); only the flows that pass the status filter and the search.
   const groups = useMemo(() => {
     if (!flows) return [];
-    const order = me.workspaces.map((m) => m.workspace_id).filter((w) => flows.some((f) => f.workspace === w));
-    const ids = [...new Set([...order, ...flows.map((f) => f.workspace)])];
-    return ids.map((ws) => ({ ws, flows: flows.filter((f) => f.workspace === ws) }));
-  }, [flows, me.workspaces]);
+    const q = query.trim().toLowerCase();
+    const shown = flows.filter(
+      (f) => FILTERS[filter].test(f) && (!q || f.name.toLowerCase().includes(q) || f.flow_id.includes(q) || f.numbers.some((n) => n.includes(q))),
+    );
+    const order = me.workspaces.map((m) => m.workspace_id).filter((w) => shown.some((f) => f.workspace === w));
+    const ids = [...new Set([...order, ...shown.map((f) => f.workspace)])];
+    return ids.map((ws) => ({ ws, flows: shown.filter((f) => f.workspace === ws) }));
+  }, [flows, me.workspaces, filter, query]);
 
   return (
     <main className="page">
-      <div className="row">
-        <div className="grow">
-          <h1>Flows</h1>
-          <p className="muted" style={{ margin: "4px 0 0" }}>
-            {can.admin(me) ? "Every workspace's flows." : "The flows in your workspaces."} Approved changes reach callers on their next call.
-          </p>
+      <PageHero
+        title="Flows"
+        actions={
+          (createIn === "*" || createIn.length > 0) && (
+            <button className="primary" onClick={() => setCreating(true)}>
+              New flow
+            </button>
+          )
+        }
+      >
+        {can.admin(me) ? "Every workspace's flows." : "Create and edit the conversations your voice agent runs."} Approved changes reach callers on
+        their next call.
+      </PageHero>
+
+      {flows && flows.length > 0 && (
+        <div className="filter-row">
+          <div className="filter-chips" role="group" aria-label="Show">
+            {(Object.keys(FILTERS) as Filter[]).map((k) => (
+              <button key={k} className={`filter-chip fc-${k}`} aria-pressed={filter === k} onClick={() => setFilter(k)}>
+                <span className="fc-icon">{FILTERS[k].icon}</span>
+                {FILTERS[k].label}
+                <span className="fc-count">{flows.filter(FILTERS[k].test).length}</span>
+              </button>
+            ))}
+          </div>
+          <label className="search" title="Search flows">
+            <IconSearch size={18} />
+            <input type="search" placeholder="Search name, id or number" aria-label="Search flows" value={query} onChange={(e) => setQuery(e.target.value)} />
+          </label>
         </div>
-        {(createIn === "*" || createIn.length > 0) && (
-          <button className="primary" onClick={() => setCreating(true)}>
-            New flow
-          </button>
-        )}
-      </div>
+      )}
 
       {error && <div className="notice bad" style={{ marginTop: 16 }}>{error}</div>}
       {!flows && !error && <p className="muted">Loading…</p>}
@@ -64,6 +102,16 @@ export function FlowList({ me }: { me: Me }) {
           )}
         </div>
       )}
+      {flows && flows.length > 0 && groups.length === 0 && (
+        <div className="card" style={{ marginTop: 18 }}>
+          <p style={{ margin: 0 }}>No flows match.</p>
+          <p className="muted" style={{ marginBottom: 0 }}>
+            <button className="link" onClick={() => (setFilter("all"), setQuery(""))}>
+              Show all flows
+            </button>
+          </p>
+        </div>
+      )}
       {groups.map((g) => (
         <section key={g.ws} className="ws-group">
           <div className="ws-group-head">
@@ -71,19 +119,27 @@ export function FlowList({ me }: { me: Me }) {
             <span className="muted">
               {g.flows.length} flow{g.flows.length === 1 ? "" : "s"}
             </span>
-            <RoleChips me={me} workspace={g.ws} />
           </div>
           <div className="flow-list">
             {g.flows.map((f) => (
               <Link key={f.flow_id} to={`/flows/${f.flow_id}`} className="flow-item">
-                <div>
+                <div className="flow-card-head">
                   <strong>{f.name}</strong>
-                  <div className="meta">
-                    <code>{f.flow_id}</code>
-                    {f.numbers.length > 0 && <span>☎ {f.numbers.join(", ")}</span>}
-                  </div>
+                  <code>{f.flow_id}</code>
                 </div>
-                <div className="meta" style={{ justifyContent: "flex-end" }}>
+                <div className="pills">
+                  <span className="pill" title={f.numbers.join(", ") || "No phone number uses this flow"}>
+                    <IconPhone size={15} />
+                    {f.numbers.length === 1 ? f.numbers[0] : "Numbers"}
+                    {f.numbers.length !== 1 && <b>{f.numbers.length}</b>}
+                  </span>
+                  <span className="pill">
+                    <IconVersion size={15} />
+                    Version<b>{f.latest_version ?? "—"}</b>
+                  </span>
+                </div>
+                <div className="flow-card-foot">
+                  <span className="foot-label">Status:</span>
                   {f.latest_version ? <span className="chip good">v{f.latest_version} live</span> : <span className="chip">not published</span>}
                   {f.pending_review && (
                     <span className="chip warn" title={`Submitted by ${f.pending_review.submitted_by}`}>
@@ -91,7 +147,12 @@ export function FlowList({ me }: { me: Me }) {
                     </span>
                   )}
                   {f.draft_valid === false && <span className="chip bad">draft has problems</span>}
-                  {f.draft_updated_at && <span>edited {timeAgo(f.draft_updated_at)}</span>}
+                  <span className="spacer" />
+                  {f.draft_updated_at && <span className="faint">edited {timeAgo(f.draft_updated_at)}</span>}
+                </div>
+                <div className="flow-card-roles">
+                  <span className="foot-label">Your roles:</span>
+                  <RoleChips me={me} workspace={g.ws} />
                 </div>
               </Link>
             ))}

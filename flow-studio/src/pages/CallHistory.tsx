@@ -3,7 +3,7 @@
 // has a caller's number, anything said, or any value collected.
 import { useEffect, useState } from "react";
 import { api, type Call, type CallSummary, type Channel, type FlowSummary, type Outcome } from "../api";
-import { timeAgo } from "../components/ui";
+import { PageHero, timeAgo } from "../components/ui";
 import { Link } from "../router";
 
 const OUTCOME: Record<Outcome, { label: string; tone: string; help: string }> = {
@@ -100,16 +100,17 @@ export function CallHistory({ flowId }: { flowId: string }) {
 
   return (
     <main className="page wide">
-      <Link to={`/flows/${flowId}`} className="link">
-        ← Back to the flow
-      </Link>
+      <PageHero
+        title={`Calls · ${flow?.name || flowId}`}
+        back={
+          <Link to={`/flows/${flowId}`} className="link">
+            ← Back to the flow
+          </Link>
+        }
+      >
+        How calls went, step by step. Only counts and timings are kept: no phone numbers, nothing said, no answers.
+      </PageHero>
       <div className="calls-head">
-        <div className="grow">
-          <h1>Calls · {flow?.name || flowId}</h1>
-          <p className="muted" style={{ margin: "4px 0 0" }}>
-            How calls went, step by step. Only counts and timings are kept: no phone numbers, nothing said, no answers.
-          </p>
-        </div>
         <div className="calls-filters">
         <div className="tabs" role="group" aria-label="Period">
           {PERIODS.map((d) => (

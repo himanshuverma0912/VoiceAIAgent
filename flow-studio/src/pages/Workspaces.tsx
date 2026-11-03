@@ -3,7 +3,7 @@
 // manage the members. Platform admins create workspaces.
 import { useEffect, useState } from "react";
 import { ApiError, api, can, type Me, type Member, type Workspace } from "../api";
-import { Dialog, Field, timeAgo, toast } from "../components/ui";
+import { Dialog, Field, PageHero, timeAgo, toast } from "../components/ui";
 import { Link, navigate } from "../router";
 import { RoleChips } from "./FlowList";
 
@@ -21,19 +21,18 @@ export function Workspaces({ me }: { me: Me }) {
 
   return (
     <main className="page">
-      <div className="row">
-        <div className="grow">
-          <h1>Workspaces</h1>
-          <p className="muted" style={{ margin: "4px 0 0" }}>
-            {can.admin(me) ? "Every workspace." : "The workspaces you're in."} People see only the flows of their workspaces.
-          </p>
-        </div>
-        {can.admin(me) && (
-          <button className="primary" onClick={() => setCreating(true)}>
-            New workspace
-          </button>
-        )}
-      </div>
+      <PageHero
+        title="Workspaces"
+        actions={
+          can.admin(me) && (
+            <button className="primary" onClick={() => setCreating(true)}>
+              New workspace
+            </button>
+          )
+        }
+      >
+        {can.admin(me) ? "Every workspace." : "The workspaces you're in."} People see only the flows of their workspaces.
+      </PageHero>
       {error && <div className="notice bad" style={{ marginTop: 16 }}>{error}</div>}
       {!list && !error && <p className="muted">Loading…</p>}
       {list && list.length === 0 && (
@@ -234,24 +233,27 @@ export function WorkspaceMembers({ me, workspace }: { me: Me; workspace: string 
 
   return (
     <main className="page">
-      <Link to="/workspaces" className="link">
-        ← Workspaces
-      </Link>
-      <div className="row wrap" style={{ marginTop: 10 }}>
-        <div className="grow">
-          <h1>{info.name}</h1>
-          <p className="muted" style={{ margin: "4px 0 0" }}>
-            <code>{info.workspace_id}</code> · {info.flows} flow{info.flows === 1 ? "" : "s"} · created {timeAgo(info.created_at)}
-            {info.created_by ? ` by ${info.created_by}` : ""}
-          </p>
-        </div>
-        {manage && <button onClick={() => setRenaming(true)}>Rename</button>}
-        {can.admin(me) && (
-          <button className="danger" disabled={info.flows > 0} title={info.flows > 0 ? "Move or remove its flows first" : ""} onClick={removeWorkspace}>
-            Delete
-          </button>
-        )}
-      </div>
+      <PageHero
+        title={info.name}
+        back={
+          <Link to="/workspaces" className="link">
+            ← Workspaces
+          </Link>
+        }
+        actions={
+          <>
+            {manage && <button onClick={() => setRenaming(true)}>Rename</button>}
+            {can.admin(me) && (
+              <button className="danger" disabled={info.flows > 0} title={info.flows > 0 ? "Move or remove its flows first" : ""} onClick={removeWorkspace}>
+                Delete
+              </button>
+            )}
+          </>
+        }
+      >
+        <code>{info.workspace_id}</code> · {info.flows} flow{info.flows === 1 ? "" : "s"} · created {timeAgo(info.created_at)}
+        {info.created_by ? ` by ${info.created_by}` : ""}
+      </PageHero>
 
       <div className="card" style={{ marginTop: 18 }}>
         <h2 style={{ marginBottom: 4 }}>People</h2>

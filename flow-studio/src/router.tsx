@@ -26,11 +26,13 @@ export function usePath(): string {
   return path;
 }
 
-export function Link(props: { to: string; className?: string; children: ReactNode }) {
+export function Link(props: { to: string; className?: string; title?: string; current?: boolean; children: ReactNode }) {
   return (
     <a
       href={props.to}
       className={props.className}
+      title={props.title}
+      aria-current={props.current ? "page" : undefined}
       onClick={(e) => {
         if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
         e.preventDefault();
