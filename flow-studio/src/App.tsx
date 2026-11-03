@@ -1,8 +1,20 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { ApiError, api, type Me } from "./api";
 import { completeSignIn, justSignedOut, markSilentTried, shouldTrySilent, signOut, startSignIn } from "./auth";
-import { IconChannel, IconChevron, IconIntegrations, IconModels, IconReviews, IconSignOut, IconStudio, IconWorkspaces } from "./components/Icons";
+import {
+  IconChannel,
+  IconChevron,
+  IconIntegrations,
+  IconModels,
+  IconMoon,
+  IconReviews,
+  IconSignOut,
+  IconStudio,
+  IconSun,
+  IconWorkspaces,
+} from "./components/Icons";
 import { Toasts } from "./components/ui";
+import { useTheme } from "./theme";
 import { CallHistory } from "./pages/CallHistory";
 import { FlowEditor } from "./pages/FlowEditor";
 import { FlowList } from "./pages/FlowList";
@@ -159,6 +171,7 @@ function AppBar({ me }: { me: Me }) {
           <small>{role}</small>
         </span>
       </div>
+      <ThemeToggle />
       <button className="round" onClick={signOut} aria-label="Sign out" title="Sign out">
         <IconSignOut />
       </button>
@@ -166,9 +179,21 @@ function AppBar({ me }: { me: Me }) {
   );
 }
 
+/** Switches light/dark; shows what you'd switch to. */
+function ThemeToggle({ className = "round" }: { className?: string }) {
+  const [theme, toggle] = useTheme();
+  const label = theme === "dark" ? "Switch to light mode" : "Switch to dark mode";
+  return (
+    <button className={className} onClick={toggle} aria-label={label} title={label}>
+      {theme === "dark" ? <IconSun /> : <IconMoon />}
+    </button>
+  );
+}
+
 function SignedOut({ error }: { error?: string }) {
   return (
     <div className="center signin">
+      <ThemeToggle className="round corner" />
       <div className="card signin-card">
         <div className="brand">
           <img src="/favicon.svg" alt="" />
