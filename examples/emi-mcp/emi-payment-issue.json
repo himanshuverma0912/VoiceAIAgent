@@ -1,0 +1,257 @@
+{
+  "schema_version": 1,
+  "flow_id": "emi_payment_issue",
+  "name": "EMI payment issue (with MCP tools)",
+  "persona": "You are a polite, professional customer-care executive for a bank's loan helpline (a demo bank: \"Demo Finance\").\nYou help customers with questions about their loan EMI (monthly instalment) payments.\nTone: calm, clear, respectful and reassuring. Keep sentences short.\n\nLanguage:\n- Reply in the language the caller is speaking: Hindi → simple Hindi; English → English; a Hindi-English mix → the same mix. Switch if they switch.\n- Write Hindi in Devanagari script, never in Roman letters. Common English words (EMI, loan, account, bank, payment) can stay in English.\n- Your voice is a woman's voice: when speaking about yourself in Hindi, always use feminine forms (\"मैं देख रही हूँ\", \"मैं समझ सकती हूँ\"), never masculine ones.",
+  "guardrails": [
+    "Only use amounts, dates and statuses that a tool gave you; never guess or invent them.",
+    "Never ask for or repeat a full card number, full account number, OTP, PIN or password.",
+    "Do not give financial, investment, credit or legal advice.",
+    "Do not promise waivers, refunds or that charges will be reversed.",
+    "Never mention AI, systems, backend, automation or technology."
+  ],
+  "greeting": "नमस्ते, Demo Finance loan helpline में आपका स्वागत है। आपकी पहचान के लिए मैं पहले कुछ details verify करूँगी। You can also speak in English.",
+  "allow_end_call_anywhere": true,
+  "settings": {
+    "language": "hi",
+    "llm_model": "voice-fast",
+    "llm_temperature": 0
+  },
+  "start_node": "verify_customer",
+  "nodes": {
+    "verify_customer": {
+      "type": "collect",
+      "instructions": "Explain briefly that you need two details to verify the caller before discussing their loan.",
+      "fields": [
+        {
+          "name": "date_of_birth",
+          "builtin": "date_of_birth"
+        },
+        {
+          "name": "loan_last4",
+          "builtin": "digits",
+          "instructions": "Ask for the last 4 digits of their loan account number. They can say them or type them on the keypad.",
+          "options": {
+            "num_digits": 4
+          }
+        }
+      ],
+      "next": "verify"
+    },
+    "verify": {
+      "type": "api",
+      "tool": "emi_core.verify_borrower",
+      "inputs": {
+        "loan_last4": "{{loan_last4}}",
+        "date_of_birth": "{{date_of_birth}}"
+      },
+      "save": [
+        "first_name",
+        "loan_type"
+      ],
+      "say": "Ek moment, main aapki details check kar rahi hoon.",
+      "verifies": true,
+      "next": "identify_issue",
+      "on_error": "not_verified"
+    },
+    "not_verified": {
+      "type": "agent",
+      "instructions": "Tell the caller, kindly, that those details didn't match our records. Offer to try again, or a call back from the loans team.",
+      "transitions": [
+        {
+          "to": "verify_customer",
+          "when": "The caller wants to try the details again."
+        },
+        {
+          "to": "callback",
+          "when": "The caller wants a call back instead."
+        },
+        {
+          "to": "closing",
+          "when": "The caller doesn't want to continue."
+        }
+      ]
+    },
+    "identify_issue": {
+      "type": "agent",
+      "on_enter": "speak",
+      "instructions": "The caller is verified. Thank {{first_name}} and ask what problem they are facing with their {{loan_type}} EMI.\n- If they ask about their EMI amount, due date or whether the last EMI went through, check get_emi_status and tell them.\n- General questions about EMI rules (late charges, bounced auto-debit, credit score, prepayment): answer with emi_faq.",
+      "transitions": [
+        {
+          "to": "missed_emi",
+          "when": "The caller says they missed an EMI, an EMI bounced, or they can't pay this month's EMI.",
+          "capture": {
+            "month": {
+              "description": "Which month's EMI it is about, in the caller's words"
+            }
+          }
+        },
+        {
+          "to": "double_debit",
+          "when": "The caller says the EMI was deducted twice or an extra amount was debited.",
+          "capture": {
+            "debit_date": {
+              "description": "When the extra debit happened, in the caller's words"
+            }
+          }
+        },
+        {
+          "to": "callback",
+          "when": "The caller's problem is anything else, or they ask to speak to a person.",
+          "capture": {
+            "issue_summary": {
+              "description": "One-sentence summary of the caller's problem"
+            }
+          }
+        }
+      ],
+      "tools": [
+        {
+          "tool": "emi_core.get_emi_status",
+          "inputs": {
+            "loan_last4": "{{loan_last4}}",
+            "date_of_birth": "{{date_of_birth}}"
+          }
+        }
+      ]
+    },
+    "missed_emi": {
+      "type": "agent",
+      "instructions": "The caller missed or can't pay the EMI for {{month}}.\n- Check get_emi_status and tell them the overdue amount and any charges, gently.\n- Explain, with emi_faq if needed, that paying soon keeps charges low.\n- Offer an SMS payment link for the total to pay now. If they want it, use send_payment_link with that amount, and tell them the link was sent to the number ending in the last digits it returns.\n- If they'd rather talk to the collections team, move on to the call back.",
+      "tools": [
+        {
+          "tool": "emi_core.get_emi_status",
+          "inputs": {
+            "loan_last4": "{{loan_last4}}",
+            "date_of_birth": "{{date_of_birth}}"
+          }
+        },
+        {
+          "tool": "emi_helpdesk.send_payment_link",
+          "inputs": {
+            "mobile": "{{caller_number}}",
+            "loan_last4": "{{loan_last4}}"
+          }
+        }
+      ],
+      "transitions": [
+        {
+          "to": "closing",
+          "when": "A payment link was sent, or the caller declined both a link and a call back."
+        },
+        {
+          "to": "callback",
+          "when": "The caller wants a call back from the collections team."
+        }
+      ]
+    },
+    "double_debit": {
+      "type": "agent",
+      "instructions": "The caller reports a double or extra EMI debit on {{debit_date}}.\n- Apologise for the trouble and check check_recent_debits.\n- If it shows a duplicate, confirm the date and amount with the caller, then move on to raise the dispute.\n- If it doesn't, read the last two debits and offer a call back from the loans team.",
+      "tools": [
+        {
+          "tool": "emi_core.check_recent_debits",
+          "inputs": {
+            "loan_last4": "{{loan_last4}}",
+            "date_of_birth": "{{date_of_birth}}"
+          }
+        }
+      ],
+      "transitions": [
+        {
+          "to": "dispute",
+          "when": "A duplicate debit was found and the caller confirmed it.",
+          "capture": {
+            "dispute_date": {
+              "description": "Date of the duplicate debit, YYYY-MM-DD, as the tool gave it"
+            },
+            "dispute_amount": {
+              "description": "The duplicate amount, as the tool gave it"
+            }
+          }
+        },
+        {
+          "to": "callback",
+          "when": "No duplicate was found and the caller wants a call back."
+        },
+        {
+          "to": "closing",
+          "when": "No duplicate was found and the caller is satisfied."
+        }
+      ]
+    },
+    "dispute": {
+      "type": "api",
+      "tool": "emi_core.raise_debit_dispute",
+      "inputs": {
+        "loan_last4": "{{loan_last4}}",
+        "date_of_birth": "{{date_of_birth}}",
+        "debit_date": "{{dispute_date}}",
+        "amount": "{{dispute_amount}}"
+      },
+      "save": [
+        "reference",
+        "review_within"
+      ],
+      "say": "Main abhi dispute raise kar rahi hoon.",
+      "next": "dispute_raised",
+      "on_error": "callback"
+    },
+    "dispute_raised": {
+      "type": "agent",
+      "instructions": "Tell the caller the dispute is raised. Give the reference {{reference}} slowly, and say the extra amount is checked within {{review_within}}. Don't promise the money back. Ask if there is anything else.",
+      "transitions": [
+        {
+          "to": "identify_issue",
+          "when": "The caller has another question about their loan."
+        },
+        {
+          "to": "closing",
+          "when": "The caller has nothing more to ask."
+        }
+      ]
+    },
+    "callback": {
+      "type": "agent",
+      "instructions": "Say a loan specialist will call back. Ask if they should call {{caller_number}}, or another number.",
+      "transitions": [
+        {
+          "to": "book_callback",
+          "when": "The caller has confirmed the call-back number or given a better one.",
+          "capture": {
+            "callback_number": {
+              "description": "The number to call back on, digits only"
+            },
+            "callback_reason": {
+              "description": "What the call back is about, in one sentence"
+            }
+          }
+        }
+      ]
+    },
+    "book_callback": {
+      "type": "api",
+      "tool": "emi_helpdesk.request_callback",
+      "inputs": {
+        "mobile": "{{callback_number}}",
+        "reason": "{{callback_reason}}"
+      },
+      "save": [
+        "call_within"
+      ],
+      "say": "Ek second, main call back book kar rahi hoon.",
+      "next": "closing",
+      "on_error": "closing"
+    },
+    "closing": {
+      "type": "end",
+      "instructions": "In one or two short sentences, recap what will happen next for the caller, based on what was agreed in this call.",
+      "goodbye": "Then thank them for calling Demo Finance and say goodbye, in the language they are speaking."
+    }
+  },
+  "tools": [
+    {
+      "tool": "emi_helpdesk.emi_faq"
+    }
+  ]
+}

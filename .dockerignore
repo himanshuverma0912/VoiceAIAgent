@@ -1,0 +1,17 @@
+# The agent image (Dockerfile) needs only requirements.txt, agent.py,
+# log_privacy.py, flow_engine/ and flows/. Leaving the rest out keeps builds
+# fast, especially locally (dev/), where node_modules and .venv exist.
+.git
+.github
+.idea
+.venv
+.env
+**/.env
+**/__pycache__
+**/node_modules
+config-service
+flow-studio
+infra
+dev
+examples
+tests

@@ -1,0 +1,20 @@
+# LiteLLM for the local setup: the same model aliases as infra/litellm-config.yaml,
+# with your own development keys (dev/.env), and no database.
+model_list:
+  - model_name: voice-fast
+    litellm_params:
+      model: openai/gpt-4o-mini
+      api_key: os.environ/OPENAI_API_KEY
+
+  # Flow Studio's AI flow builder ("Describe it").
+  - model_name: flow-builder
+    litellm_params:
+      model: openai/gpt-5.6-sol
+      api_key: os.environ/OPENAI_API_KEY
+      timeout: 360
+
+litellm_settings:
+  turn_off_message_logging: true
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY

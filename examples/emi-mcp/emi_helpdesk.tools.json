@@ -1,0 +1,79 @@
+[
+  {
+    "name": "emi_faq",
+    "description": "Answer a general question about EMIs: late or penal charges, bounced auto-debits, credit score, prepayment, changing the EMI date, double debits.",
+    "inputs": [
+      {
+        "name": "question",
+        "type": "string",
+        "description": "Question",
+        "required": true
+      }
+    ],
+    "outputs": [],
+    "sensitive": false,
+    "locked": [],
+    "max_calls": 5
+  },
+  {
+    "name": "send_payment_link",
+    "description": "Send the caller an SMS link to pay an overdue EMI (demo: nothing is actually sent). Returns a reference.",
+    "inputs": [
+      {
+        "name": "amount",
+        "type": "string",
+        "description": "Amount",
+        "required": false
+      },
+      {
+        "name": "loan_last4",
+        "type": "string",
+        "description": "Loan Last4",
+        "required": true
+      },
+      {
+        "name": "mobile",
+        "type": "string",
+        "description": "Mobile",
+        "required": true
+      }
+    ],
+    "outputs": [
+      "reference",
+      "sent_to"
+    ],
+    "sensitive": true,
+    "locked": [
+      "mobile",
+      "loan_last4"
+    ],
+    "max_calls": 2
+  },
+  {
+    "name": "request_callback",
+    "description": "Book a call back from a loan specialist. Returns a reference and when they will call.",
+    "inputs": [
+      {
+        "name": "mobile",
+        "type": "string",
+        "description": "Mobile",
+        "required": true
+      },
+      {
+        "name": "reason",
+        "type": "string",
+        "description": "Reason",
+        "required": true
+      }
+    ],
+    "outputs": [
+      "reference",
+      "call_within"
+    ],
+    "sensitive": false,
+    "locked": [
+      "mobile"
+    ],
+    "max_calls": 2
+  }
+]

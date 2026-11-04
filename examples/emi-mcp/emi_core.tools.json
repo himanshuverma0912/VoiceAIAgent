@@ -1,0 +1,132 @@
+[
+  {
+    "name": "verify_borrower",
+    "description": "Check the caller's loan account (last 4 digits) and date of birth. Fails if they don't match a borrower.",
+    "inputs": [
+      {
+        "name": "date_of_birth",
+        "type": "string",
+        "description": "Date Of Birth",
+        "required": true
+      },
+      {
+        "name": "loan_last4",
+        "type": "string",
+        "description": "Loan Last4",
+        "required": true
+      }
+    ],
+    "outputs": [
+      "verified",
+      "first_name",
+      "loan_type"
+    ],
+    "sensitive": false,
+    "locked": [
+      "loan_last4",
+      "date_of_birth"
+    ],
+    "max_calls": 3
+  },
+  {
+    "name": "get_emi_status",
+    "description": "The loan's EMI amount, next due date, the last EMI and whether it was paid or bounced, and any overdue amount and charges (INR).",
+    "inputs": [
+      {
+        "name": "date_of_birth",
+        "type": "string",
+        "description": "Date Of Birth",
+        "required": true
+      },
+      {
+        "name": "loan_last4",
+        "type": "string",
+        "description": "Loan Last4",
+        "required": true
+      }
+    ],
+    "outputs": [
+      "emi_amount",
+      "next_due_date",
+      "last_emi_status",
+      "overdue_amount",
+      "charges",
+      "total_to_pay_now"
+    ],
+    "sensitive": true,
+    "locked": [
+      "loan_last4",
+      "date_of_birth"
+    ],
+    "max_calls": 3
+  },
+  {
+    "name": "check_recent_debits",
+    "description": "EMI debits from the caller's bank account in the last 3 months, newest first, and whether any EMI was debited twice.",
+    "inputs": [
+      {
+        "name": "date_of_birth",
+        "type": "string",
+        "description": "Date Of Birth",
+        "required": true
+      },
+      {
+        "name": "loan_last4",
+        "type": "string",
+        "description": "Loan Last4",
+        "required": true
+      }
+    ],
+    "outputs": [
+      "duplicate_found",
+      "duplicate_date",
+      "duplicate_amount"
+    ],
+    "sensitive": true,
+    "locked": [
+      "loan_last4",
+      "date_of_birth"
+    ],
+    "max_calls": 3
+  },
+  {
+    "name": "raise_debit_dispute",
+    "description": "Raise a dispute for an EMI debited twice or an extra debit. Returns a reference and how long the check takes.",
+    "inputs": [
+      {
+        "name": "amount",
+        "type": "string",
+        "description": "Amount",
+        "required": false
+      },
+      {
+        "name": "date_of_birth",
+        "type": "string",
+        "description": "Date Of Birth",
+        "required": true
+      },
+      {
+        "name": "debit_date",
+        "type": "string",
+        "description": "Debit Date",
+        "required": true
+      },
+      {
+        "name": "loan_last4",
+        "type": "string",
+        "description": "Loan Last4",
+        "required": true
+      }
+    ],
+    "outputs": [
+      "reference",
+      "review_within"
+    ],
+    "sensitive": true,
+    "locked": [
+      "loan_last4",
+      "date_of_birth"
+    ],
+    "max_calls": 2
+  }
+]

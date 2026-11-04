@@ -94,6 +94,10 @@ FLOWS = FlowSource(
 # random bytes: `openssl rand -base64 32`). Not set: no call ever resumes.
 RESUME = ResumeStore(url=_env("CONFIG_SERVICE_URL"), token=_env("CONFIG_SERVICE_TOKEN"), secret=load_secret(_env("RESUME_KEY")))
 
+# LiveKit's noise cancellation only works with LiveKit Cloud. A self-hosted
+# LiveKit server (the local setup in dev/) sets NOISE_CANCELLATION=off.
+NOISE_CANCELLATION = (_env("NOISE_CANCELLATION", "on") or "on").lower() not in ("off", "false", "0", "no")
+
 # Cartesia voice used when the flow doesn't set settings.tts_voice_id.
 CARTESIA_VOICE_ID = _env("CARTESIA_VOICE_ID", "9626c31c-bec5-4cca-baa8-f8ba9e84c8bc")
 
@@ -205,7 +209,14 @@ def build_tts(flow: Flow) -> cartesia.TTS:
 # drain_timeout: when Docker sends SIGTERM during a deploy, the server stops
 # accepting new calls and lets live calls finish for up to 900 s (15 min).
 # deploy.yml waits the same 900 s before force-stopping the old container.
-server = AgentServer(drain_timeout=900)
+#
+# IGNORE_CPU_LOAD=on (the local setup in dev/ only): report no load. LiveKit
+# skips an agent that reports a busy CPU, and on a laptop the browser, Keycloak
+# and the agent share one, so test calls would randomly find no agent.
+if (_env("IGNORE_CPU_LOAD", "off") or "off").lower() in ("on", "true", "1", "yes"):
+    server = AgentServer(drain_timeout=900, load_fnc=lambda: 0.0)
+else:
+    server = AgentServer(drain_timeout=900)
 
 
 def _job_metadata(ctx: agents.JobContext) -> dict:
@@ -397,10 +408,16 @@ async def entrypoint(ctx: agents.JobContext) -> None:
             # ends this job instead of leaving it running.
             delete_room_on_close=True,
             audio_input=room_io.AudioInputOptions(
-                noise_cancellation=lambda params: (
-                    noise_cancellation.BVCTelephony()
-                    if params.participant.kind == rtc.ParticipantKind.PARTICIPANT_KIND_SIP
-                    else noise_cancellation.BVC()
+                noise_cancellation=(
+                    (
+                        lambda params: (
+                            noise_cancellation.BVCTelephony()
+                            if params.participant.kind == rtc.ParticipantKind.PARTICIPANT_KIND_SIP
+                            else noise_cancellation.BVC()
+                        )
+                    )
+                    if NOISE_CANCELLATION
+                    else None
                 ),
             ),
         ),
