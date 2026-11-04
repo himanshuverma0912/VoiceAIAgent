@@ -5,6 +5,8 @@ What a record holds, and nothing else:
   - when the call started and how long it lasted
   - the steps it went through, with the time spent in each
   - the tools it used (bank API, MCP server): which, whether each worked, how long
+  - the reply checks that changed or stopped what the agent was about to say:
+    which check, on which step, and whether it fixed or stopped the sentence
   - how it ended (completed, caller hung up, ended early, time limit, error)
   - whether it picked up from a dropped call, and whether it left a resume
     point for the caller to pick up from (never where, or what was kept)
@@ -67,6 +69,7 @@ class CallRecorder:
         self.started = clock()
         self._steps: list[tuple[str, float]] = []
         self._tools: list[dict] = []
+        self._checks: list[dict] = []
         self._caller_turns = 0
         self._agent_turns = 0
         self._latencies: list[float] = []
@@ -94,6 +97,11 @@ class CallRecorder:
     def resume_saved(self) -> None:
         """The caller hung up mid-flow and can pick up again on a call back."""
         self._resume_saved = True
+
+    def reply_check(self, check: str, action: str, node: str) -> None:
+        """A reply check fired: its name, the step, "fix" or "stop" (never the sentence)."""
+        if len(self._checks) < 200:
+            self._checks.append({"check": check, "node": node, "action": action})
 
     def agent_ended_call(self) -> None:
         self._agent_ended = True
@@ -172,6 +180,10 @@ class CallRecorder:
             record["resumed"] = True
         if self._resume_saved:
             record["resume_saved"] = True
+        # Only when one fired, for the same reason (a config service from before
+        # reply checks).
+        if self._checks:
+            record["checks"] = list(self._checks)
         return record
 
 

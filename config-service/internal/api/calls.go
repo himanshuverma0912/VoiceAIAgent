@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"time"
@@ -103,6 +104,23 @@ func checkCall(c *store.Call, now time.Time) []string {
 			bad("tools[%d].tool: not an '<integration>.<tool>' name", i)
 		}
 		between(fmt.Sprintf("tools[%d].ms", i), t.Ms, 0, 600_000)
+	}
+	if c.Checks == nil {
+		c.Checks = []store.CallCheck{}
+	}
+	if len(c.Checks) > 200 {
+		bad("checks: at most 200")
+	}
+	for i, ch := range c.Checks {
+		if !slices.Contains(flowspec.ReplyChecks, ch.Check) {
+			bad("checks[%d].check: not a reply check", i)
+		}
+		if !identifierRE.MatchString(ch.Node) {
+			bad("checks[%d].node: not a node id", i)
+		}
+		if ch.Action != "fix" && ch.Action != "stop" {
+			bad("checks[%d].action: must be fix or stop", i)
+		}
 	}
 	between("turns.caller", c.Turns.Caller, 0, 10000)
 	between("turns.agent", c.Turns.Agent, 0, 10000)
@@ -244,6 +262,15 @@ type resumeStats struct {
 	Resumed int `json:"resumed"`
 }
 
+// checkStats: how often a reply check changed or stopped what the agent was about to say.
+type checkStats struct {
+	Check   string         `json:"check"`
+	Fired   int            `json:"fired"`   // times, over every call
+	Calls   int            `json:"calls"`   // calls where it fired at least once
+	Stopped int            `json:"stopped"` // ...of the times, how many stopped the sentence
+	Steps   map[string]int `json:"steps"`   // times per step
+}
+
 type versionStats struct {
 	Version       *int   `json:"version"` // null: a draft or the fallback file
 	Source        string `json:"source"`
@@ -270,6 +297,7 @@ type callSummary struct {
 	Latency   *durationStats   `json:"latency_ms"` // p50: typical reply; p95: slow replies
 	Steps     []stepStats      `json:"steps"`
 	Tools     []toolStats      `json:"tools"`
+	Checks    []checkStats     `json:"checks"`
 	Resume    resumeStats      `json:"resume"`
 	Versions  []versionStats   `json:"versions"`
 	PerDay    []dayStats       `json:"per_day"`
@@ -323,6 +351,7 @@ func summarise(calls []store.Call, days int, channel string, now time.Time) call
 	turns := store.CallTurns{}
 	toolMs := map[string][]int{}
 	toolFailed := map[string]int{}
+	checks := map[string]*checkStats{}
 
 	for _, c := range calls {
 		out.Outcomes[c.Outcome]++
@@ -345,6 +374,24 @@ func summarise(calls []store.Call, days int, channel string, now time.Time) call
 			toolMs[t.Tool] = append(toolMs[t.Tool], t.Ms)
 			if !t.OK {
 				toolFailed[t.Tool]++
+			}
+		}
+
+		inCall := map[string]bool{}
+		for _, ch := range c.Checks {
+			st := checks[ch.Check]
+			if st == nil {
+				st = &checkStats{Check: ch.Check, Steps: map[string]int{}}
+				checks[ch.Check] = st
+			}
+			st.Fired++
+			st.Steps[ch.Node]++
+			if ch.Action == "stop" {
+				st.Stopped++
+			}
+			if !inCall[ch.Check] {
+				inCall[ch.Check] = true
+				st.Calls++
 			}
 		}
 
@@ -436,6 +483,17 @@ func summarise(calls []store.Call, days int, channel string, now time.Time) call
 			return out.Tools[i].Uses > out.Tools[j].Uses
 		}
 		return out.Tools[i].Tool < out.Tools[j].Tool
+	})
+
+	out.Checks = []checkStats{}
+	for _, st := range checks {
+		out.Checks = append(out.Checks, *st)
+	}
+	sort.Slice(out.Checks, func(i, j int) bool {
+		if out.Checks[i].Fired != out.Checks[j].Fired {
+			return out.Checks[i].Fired > out.Checks[j].Fired
+		}
+		return out.Checks[i].Check < out.Checks[j].Check
 	})
 
 	out.Versions = []versionStats{}

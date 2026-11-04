@@ -1,5 +1,6 @@
 import { offeredTo, type CatalogEntry, type CatalogKind, type OfferedTool } from "../api";
 import { BUILTIN_VARIABLES, problemText, type Flow, type FlowSettings } from "../spec";
+import { ReplyChecks } from "./ReplyChecks";
 import { ToolUses } from "./Tools";
 import { Check, Field, VarText } from "./ui";
 
@@ -232,6 +233,34 @@ export function SettingsEditor(props: {
             </p>
           </>
         )}
+      </div>
+
+      <div className="section">
+        <h3 style={{ marginBottom: 6 }}>Reply checks ({s.reply_checks?.length ?? 0})</h3>
+        <p className="hint" style={{ marginTop: 0 }}>
+          Every sentence the agent says is checked before the caller hears it, on every step. Steps can add more.
+        </p>
+        <ReplyChecks
+          selected={s.reply_checks ?? []}
+          editable={ed}
+          change={(checks) => setSetting((x) => (checks.length ? (x.reply_checks = checks) : delete x.reply_checks))}
+        />
+        <Field
+          label="Said instead when a check stops a sentence (optional)"
+          hint={
+            (s.language ?? "hi").startsWith("hi")
+              ? "Empty: a Hindi line that fits the check, e.g. “कृपया एक पल रुकिए, मुझे वह राशि दोबारा देखनी होगी।”"
+              : "Empty: a line that fits the check, e.g. “Let me just double-check that figure for you.”"
+          }
+        >
+          <VarText
+            value={s.reply_check_line ?? ""}
+            rows={2}
+            vars={vars}
+            disabled={!ed}
+            onChange={(v) => setSetting((x) => (v ? (x.reply_check_line = v) : delete x.reply_check_line))}
+          />
+        </Field>
       </div>
 
       <div className="section">

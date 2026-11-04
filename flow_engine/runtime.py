@@ -29,6 +29,9 @@ start over. Carrying on goes to the saved step; if the caller had been
 verified, that's the step before verification, and the verifying API step
 then goes back to where they were instead of its usual "next".
 
+Reply checks (see reply_checks.py): every step that talks passes the LLM's
+reply through the flow's checks, sentence by sentence, before text-to-speech.
+
 Every node's instructions are built the same way: persona, guardrails,
 values collected so far, then the node's own instructions, with
 {{variables}} filled in.
@@ -44,9 +47,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from collections.abc import Callable
+from collections.abc import AsyncIterable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime
+from decimal import Decimal
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -75,6 +79,7 @@ from .spec import (
     Flow,
     ToolUse,
 )
+from .reply_checks import AMOUNT_RETRY, AMOUNT_RULE, CheckContext, Fired, checked, numbers_in
 from .resume import ResumePoint
 from .tools import ToolCaller, ToolFailed, for_llm, json_schema
 
@@ -160,6 +165,10 @@ class CallState:
     # sends the caller once they've verified again (instead of its "next").
     resume_point: ResumePoint | None = None
     resume_then: str | None = None
+    # Every number the tools returned on this call: amounts the agent may say.
+    tool_numbers: set[Decimal] = field(default_factory=set)
+    # Called with (check, action, node) when a reply check changes or stops a reply.
+    on_check: Callable[[str, str, str], None] | None = None
 
     def variables(self) -> dict[str, str]:
         now = datetime.now(IST)
@@ -254,6 +263,48 @@ def _handoff_ctx(agent: Agent) -> llm.ChatContext:
     return agent.chat_ctx.copy(exclude_instructions=True)
 
 
+def reply_check_names(state: CallState, node_id: str) -> list[str]:
+    """The checks for a step: the flow's, then the step's own."""
+    names = list(state.flow.settings.reply_checks)
+    node = state.flow.nodes.get(node_id)
+    if isinstance(node, AgentNode):
+        names += [n for n in node.reply_checks if n not in names]
+    return names
+
+
+class _CheckedReplies:
+    """Runs the step's reply checks on everything the LLM says (reply_checks.py)."""
+
+    state: CallState
+    node_id: str
+    _retried_at: int | None = None
+
+    async def llm_node(self, chat_ctx, tools, model_settings) -> AsyncIterable[Any]:  # type: ignore[override]
+        stream = Agent.default.llm_node(self, chat_ctx, tools, model_settings)  # type: ignore[arg-type]
+        names = reply_check_names(self.state, self.node_id)
+        if not names:
+            async for chunk in stream:
+                yield chunk
+            return
+        ctx = CheckContext(self.state, self.node_id, chat_ctx)
+        async for chunk in checked(stream, names, ctx, self._fired):
+            yield chunk
+        if ctx.stopped and ctx.stopped.retry and not ctx.called_tools:
+            self._retry_once(chat_ctx)
+
+    def _fired(self, f: Fired) -> None:
+        if self.state.on_check:
+            self.state.on_check(f.check, f.action, self.node_id)
+
+    def _retry_once(self, chat_ctx: llm.ChatContext) -> None:
+        """One more try after a stopped amount, at most once per thing the caller says."""
+        turns = sum(1 for i in chat_ctx.items if getattr(i, "type", None) == "message" and i.role == "user")
+        if self._retried_at == turns:
+            return
+        self._retried_at = turns
+        self.session.generate_reply(instructions=AMOUNT_RETRY)  # type: ignore[attr-defined]
+
+
 class _NodeMixin:
     """Shared behaviour: the greeting on the very first node, and logging."""
 
@@ -278,7 +329,7 @@ class _NodeMixin:
                 logger.exception("couldn't report the current step")
 
 
-class FlowAgent(_NodeMixin, Agent):
+class FlowAgent(_CheckedReplies, _NodeMixin, Agent):
     def __init__(
         self, state: CallState, node_id: str, node: AgentNode, chat_ctx: llm.ChatContext | None
     ) -> None:
@@ -291,6 +342,8 @@ class FlowAgent(_NodeMixin, Agent):
         body = node.instructions
         if integration_tools:
             body += "\n\n" + TOOL_RULES
+        if "amounts_from_tools" in reply_check_names(state, node_id):
+            body += "\n\n" + AMOUNT_RULE
         if node.transitions:
             body += "\n\nWhen to move on: as soon as one of these conditions is met, call its tool. " \
                     "Don't tell the caller you are moving to another step.\n" + "\n".join(
@@ -363,9 +416,11 @@ def tool_for_llm(state: CallState, use: ToolUse) -> llm.Tool | None:
         args: dict[str, object] = {k: v for k, v in raw_arguments.items() if k not in hidden}
         args.update({k: state.render_input(v) for k, v in use.inputs.items()})
         try:
-            return for_llm(await state.tools.call(use.tool, args))  # type: ignore[union-attr]
+            result = await state.tools.call(use.tool, args)  # type: ignore[union-attr]
         except ToolFailed as e:
             raise ToolError(f"{use.tool_name} didn't work: {e}") from None
+        state.tool_numbers |= numbers_in(result)
+        return for_llm(result)
 
     return _use
 
@@ -400,9 +455,11 @@ class ApiAgent(_NodeMixin, Agent):
             return False, {}
         args = {k: self.state.render_input(v) for k, v in self.node.inputs.items()}
         try:
-            return True, await self.state.tools.call(self.node.tool, args)
+            result = await self.state.tools.call(self.node.tool, args)
         except ToolFailed:
             return False, {}
+        self.state.tool_numbers |= numbers_in(result)
+        return True, result
 
     async def on_enter(self) -> None:
         self._entered()
@@ -429,7 +486,7 @@ class ApiAgent(_NodeMixin, Agent):
         self.session.update_agent(build_node_agent(self.state, target, _handoff_ctx(self)))
 
 
-class EndAgent(_NodeMixin, Agent):
+class EndAgent(_CheckedReplies, _NodeMixin, Agent):
     """Says the node's final words and hangs up, every time.
 
     Ending doesn't depend on the LLM deciding to call end_call: on entering the
@@ -512,10 +569,11 @@ def resume_agent(state: CallState, point: ResumePoint) -> Agent:
 # ── Collect node ──────────────────────────────────────────────────────────────
 
 
-class CustomFieldTask(AgentTask[Any]):
+class CustomFieldTask(_CheckedReplies, AgentTask[Any]):
     """Asks for one custom field and returns the caller's answer."""
 
-    def __init__(self, state: CallState, f: CustomField, chat_ctx: llm.ChatContext | None) -> None:
+    def __init__(self, state: CallState, node_id: str, f: CustomField, chat_ctx: llm.ChatContext | None) -> None:
+        self.state, self.node_id = state, node_id
         self.field_def = f
         value_schema: dict[str, Any] = {"type": _json_type(f.type), "description": f.description}
         if f.enum:
@@ -627,7 +685,7 @@ def _result_value(f, result: Any) -> Any:
     return value.isoformat() if hasattr(value, "isoformat") else value
 
 
-class CollectAgent(_NodeMixin, Agent):
+class CollectAgent(_CheckedReplies, _NodeMixin, Agent):
     """Collects every field of a collect node, then hands off to its next node."""
 
     def __init__(self, state: CallState, node_id: str, node: CollectNode, chat_ctx: llm.ChatContext | None) -> None:
@@ -641,7 +699,7 @@ class CollectAgent(_NodeMixin, Agent):
             logger.info("flow field asked", extra={"node": self.node_id, "field": f.name})
             ctx = self.chat_ctx.copy(exclude_instructions=True)
             if isinstance(f, CustomField):
-                return CustomFieldTask(self.state, f, ctx)
+                return CustomFieldTask(self.state, self.node_id, f, ctx)
             return _builtin_task(self.state, f, ctx)
 
         return factory

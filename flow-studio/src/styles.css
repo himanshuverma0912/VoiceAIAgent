@@ -573,6 +573,10 @@ label.field > span, .field-label { display: block; font-size: 12.5px; color: var
 .transcript { overflow: auto; padding: 10px 14px; display: flex; flex-direction: column; gap: 8px; min-height: 120px; }
 .transcript .line { display: flex; flex-direction: column; max-width: 88%; padding: 7px 11px; border-radius: 12px; background: var(--sunk); font-size: 13.5px; }
 .transcript .line.you { align-self: flex-end; background: var(--accent-soft); }
+/* A reply check acted on the next sentence (test calls only). */
+.transcript .line.check { align-self: center; max-width: 94%; background: transparent; border: 1px dashed var(--line); color: var(--muted); font-size: 12.5px; }
+.transcript .line.check.stopped { border-color: var(--warn); color: var(--warn); background: var(--warn-soft); }
+.transcript .line.check .who { color: inherit; }
 .transcript .who { font-size: 10.5px; color: var(--faint); font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; }
 .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--faint); flex: none; }
 .dot.live, .dot.listening { background: var(--good); }
@@ -645,6 +649,16 @@ p.hint.bad, .hint .bad { color: var(--bad); }
 /* ── resume ── */
 .keep-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 2px 12px; margin: 6px 0 4px; }
 .keep-list .check { margin-bottom: 4px; font-family: var(--mono); font-size: 12.5px; }
+
+/* ── reply checks ── */
+.reply-checks { display: grid; gap: 8px; margin-bottom: 14px; }
+.reply-check { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--sunk); cursor: pointer; }
+.reply-check.on { border-color: var(--accent); background: var(--accent-soft); }
+.reply-check input { margin-top: 3px; flex: none; }
+.reply-check strong { font-weight: 500; margin-right: 6px; }
+.reply-check .chip { line-height: 20px; font-size: 11px; }
+.reply-check .hint { display: block; margin-top: 2px; }
+.step-count { display: inline-block; margin-right: 12px; white-space: nowrap; }
 
 /* ── sign in ── */
 .signin { min-height: 100%; position: relative; }

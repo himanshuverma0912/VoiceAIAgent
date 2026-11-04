@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import { api, type Call, type CallSummary, type Channel, type FlowSummary, type Outcome } from "../api";
 import { PageHero, timeAgo } from "../components/ui";
 import { Link } from "../router";
+import { REPLY_CHECKS } from "../spec";
 
 const OUTCOME: Record<Outcome, { label: string; tone: string; help: string }> = {
   completed: { label: "Completed", tone: "good", help: "Reached an end step and the agent said goodbye" },
@@ -266,6 +267,53 @@ function Report({ summary, calls }: { summary: CallSummary; calls: Call[] }) {
                     <td className="num">{t.failed > 0 ? <span className="chip bad">{t.failed}</span> : <span className="muted">0</span>}</td>
                     <td className="num">{seconds(t.avg_ms)}</td>
                     <td className="num">{seconds(t.p95_ms)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
+
+      {summary.checks && summary.checks.length > 0 && (
+        <section className="card calls-section">
+          <h2>Reply checks</h2>
+          <p className="muted small-text">
+            Sentences the agent was about to say that a check changed (masked a number) or stopped (the caller heard the safe line
+            instead), and on which steps. What was said is never kept.
+          </p>
+          <div className="table-wrap">
+            <table className="data">
+              <thead>
+                <tr>
+                  <th>Check</th>
+                  <th className="num">Times</th>
+                  <th className="num">Stopped</th>
+                  <th className="num">Calls</th>
+                  <th>Steps</th>
+                </tr>
+              </thead>
+              <tbody>
+                {summary.checks.map((c) => (
+                  <tr key={c.check}>
+                    <td>
+                      {REPLY_CHECKS.find((r) => r.id === c.check)?.label ?? c.check}
+                      <div className="hint">
+                        <code>{c.check}</code>
+                      </div>
+                    </td>
+                    <td className="num">{c.fired}</td>
+                    <td className="num">{c.stopped > 0 ? <span className="chip warn">{c.stopped}</span> : <span className="muted">0</span>}</td>
+                    <td className="num">{c.calls}</td>
+                    <td className="small-text">
+                      {Object.entries(c.steps)
+                        .sort((a, b) => b[1] - a[1])
+                        .map(([node, n]) => (
+                          <span key={node} className="step-count">
+                            <code>{node}</code> {n}
+                          </span>
+                        ))}
+                    </td>
                   </tr>
                 ))}
               </tbody>

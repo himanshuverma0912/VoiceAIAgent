@@ -53,6 +53,7 @@ export interface AgentNode {
   transitions?: Transition[];
   on_enter?: "speak" | "wait";
   tools?: ToolUse[];
+  reply_checks?: ReplyCheck[]; // on top of the flow's
 }
 
 /** Calls one tool without the LLM, then moves on (next) or, if it fails, to on_error. */
@@ -91,7 +92,34 @@ export interface FlowSettings {
   tts_voice_id?: string | null;
   /** Drop-resume: a caller who hangs up mid-flow can carry on within 15 minutes. */
   resume?: { enabled?: boolean; keep?: string[] };
+  reply_checks?: ReplyCheck[]; // on every step
+  reply_check_line?: string;
 }
+
+/** Checks on every sentence before the caller hears it (flow_engine/reply_checks.py). */
+export type ReplyCheck = "mask_long_numbers" | "amounts_from_tools" | "no_promises";
+
+export const REPLY_CHECKS: { id: ReplyCheck; label: string; about: string; stops: boolean }[] = [
+  {
+    id: "amounts_from_tools",
+    label: "Amounts must come from the bank",
+    about:
+      "A ₹ amount must be one a tool returned on this call, one the caller said, or one written in this flow (rounding to the rupee is fine). Otherwise the sentence isn't said and the agent tries once more.",
+    stops: true,
+  },
+  {
+    id: "mask_long_numbers",
+    label: "Mask card and account numbers",
+    about: "12 or more digits in a row are read as “ending in 3456”.",
+    stops: false,
+  },
+  {
+    id: "no_promises",
+    label: "No promises",
+    about: "“Waived”, “guaranteed”, “approved”, “you'll get a refund” and the like aren't said (“I can't guarantee” is fine).",
+    stops: true,
+  },
+];
 
 export interface Flow {
   schema_version: 1;

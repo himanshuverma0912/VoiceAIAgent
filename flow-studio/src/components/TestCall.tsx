@@ -4,6 +4,9 @@
 //
 // The transcript arrives on LiveKit's "lk.transcription" text streams (the
 // agent sends both sides) and lives only in this panel: closing it forgets it.
+// When a reply check changes or stops a sentence, the agent says so on the
+// "flow.check" data topic (which check, the step, fix or stop: never the
+// sentence), and the panel shows it where it happened.
 import {
   ParticipantKind,
   Room,
@@ -15,12 +18,31 @@ import {
 } from "livekit-client";
 import { useEffect, useRef, useState } from "react";
 import { ApiError, api } from "../api";
+import { REPLY_CHECKS } from "../spec";
 
 type Phase = "starting" | "waiting" | "live" | "ended";
 interface Line {
   id: string;
-  who: "you" | "agent";
+  who: "you" | "agent" | "check";
   text: string;
+  stopped?: boolean;
+}
+
+/** What the panel shows when a reply check acted on a sentence. */
+function checkLine(raw: Uint8Array, n: number): Line | null {
+  try {
+    const { check, action, node } = JSON.parse(new TextDecoder().decode(raw));
+    const label = REPLY_CHECKS.find((c) => c.id === check)?.label ?? check;
+    const what =
+      action === "stop"
+        ? check === "amounts_from_tools"
+          ? "stopped a sentence before the caller heard it; the agent tried again"
+          : "stopped a sentence before the caller heard it; the agent said the safe line instead"
+        : "changed a sentence before the caller heard it";
+    return { id: `check-${n}`, who: "check", text: `${label}: ${what} (step ${node})`, stopped: action === "stop" };
+  } catch {
+    return null;
+  }
 }
 
 const STATE_LABEL: Record<string, string> = {
@@ -80,6 +102,13 @@ export function TestCall(props: { flowId: string; onNode: (id: string | null) =>
       .on(RoomEvent.ParticipantConnected, agentJoined)
       .on(RoomEvent.ParticipantAttributesChanged, (_changed, p) => {
         if (p !== room.localParticipant && isAgent(p as RemoteParticipant)) readAgent(p as RemoteParticipant);
+      })
+      .on(RoomEvent.DataReceived, (payload, _p, _kind, topic) => {
+        if (topic !== "flow.check") return;
+        setLines((ls) => {
+          const line = checkLine(payload, ls.length);
+          return line ? [...ls, line] : ls;
+        });
       })
       .on(RoomEvent.AudioPlaybackStatusChanged, () => setBlockedAudio(!room.canPlaybackAudio))
       .on(RoomEvent.Disconnected, () => {
@@ -198,12 +227,19 @@ export function TestCall(props: { flowId: string; onNode: (id: string | null) =>
             {phase === "live" ? "Say something. The conversation appears here." : "The agent joins in a few seconds."}
           </p>
         )}
-        {lines.map((l) => (
-          <div key={l.id} className={`line ${l.who}`}>
-            <span className="who">{l.who === "you" ? "You" : "Agent"}</span>
-            <span>{l.text}</span>
-          </div>
-        ))}
+        {lines.map((l) =>
+          l.who === "check" ? (
+            <div key={l.id} className={`line check${l.stopped ? " stopped" : ""}`} role="status">
+              <span className="who">Check</span>
+              <span>{l.text}</span>
+            </div>
+          ) : (
+            <div key={l.id} className={`line ${l.who}`}>
+              <span className="who">{l.who === "you" ? "You" : "Agent"}</span>
+              <span>{l.text}</span>
+            </div>
+          ),
+        )}
       </div>
       <div className="test-call-foot">
         <span className="hint grow" style={{ margin: 0 }}>

@@ -162,3 +162,74 @@ func TestSummariseEmpty(t *testing.T) {
 		t.Fatalf("days: %+v", s.PerDay)
 	}
 }
+
+// Reply checks in call history: which check fired on which step, never what was said.
+func TestCallHistoryReplyChecks(t *testing.T) {
+	url := os.Getenv("TEST_DATABASE_URL")
+	if url == "" {
+		t.Skip("TEST_DATABASE_URL not set")
+	}
+	db, err := sql.Open("postgres", url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+	if _, err := db.ExecContext(ctx, `DROP SCHEMA public CASCADE; CREATE SCHEMA public;`); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Migrate(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	kc := authtest.New(t)
+	srv := httptest.NewServer((&Server{
+		Store: store.New(db), AdminToken: adminToken, RuntimeToken: runtimeToken,
+		Users: &auth.Verifier{Issuer: authtest.Issuer, Audience: "config-api", JWKSURL: kc.JWKSURL()},
+	}).Handler())
+	defer srv.Close()
+	c := client{t, srv.URL}
+	vera := kc.Token(t, "vera@demo.corp", []string{"viewer"}, []string{"emi"}, nil)
+	c.json("PUT", "/v1/workspaces/emi", adminToken, []byte(`{"name": "EMI"}`), 201)
+	c.json("PUT", "/v1/flows/emi_payment_issue/draft?workspace=emi", adminToken, spec(t, "emi-payment-issue.json"), 200)
+
+	now := time.Now()
+	withChecks := func(id string, checks string) []byte {
+		rec := string(callRecord(id, "completed", now.Add(-time.Minute), 2, "greet", "ask_loan", "goodbye"))
+		return []byte(strings.Replace(rec, `"turns":`, `"checks": `+checks+`, "turns":`, 1))
+	}
+	c.json("POST", "/internal/v1/calls", runtimeToken, withChecks("AJ_c1", `[
+		{"check": "amounts_from_tools", "node": "ask_loan", "action": "stop"},
+		{"check": "amounts_from_tools", "node": "ask_loan", "action": "stop"},
+		{"check": "mask_long_numbers", "node": "greet", "action": "fix"}]`), 201)
+	c.json("POST", "/internal/v1/calls", runtimeToken, withChecks("AJ_c2", `[
+		{"check": "amounts_from_tools", "node": "goodbye", "action": "stop"}]`), 201)
+	// A record without checks (an agent from before reply checks) is fine too.
+	c.json("POST", "/internal/v1/calls", runtimeToken, callRecord("AJ_c3", "completed", now.Add(-time.Minute), 2, "greet"), 201)
+
+	for name, checks := range map[string]string{
+		"unknown check":  `[{"check": "be_nice", "node": "greet", "action": "stop"}]`,
+		"not a node id":  `[{"check": "no_promises", "node": "Asha Rao", "action": "stop"}]`,
+		"unknown action": `[{"check": "no_promises", "node": "greet", "action": "rewrite"}]`,
+		"what was said":  `[{"check": "no_promises", "node": "greet", "action": "stop", "text": "fee waived"}]`,
+	} {
+		want := 422
+		if name == "what was said" {
+			want = 400 // unknown fields are refused outright
+		}
+		c.json("POST", "/internal/v1/calls", runtimeToken, withChecks("AJ_bad", checks), want)
+	}
+
+	sum := c.json("GET", "/v1/flows/emi_payment_issue/calls/summary?days=7", vera, nil, 200)
+	want := `[{"calls":2,"check":"amounts_from_tools","fired":3,"steps":{"ask_loan":2,"goodbye":1},"stopped":3},` +
+		`{"calls":1,"check":"mask_long_numbers","fired":1,"steps":{"greet":1},"stopped":0}]`
+	if got := toJSON(sum["checks"]); got != want {
+		t.Fatalf("checks summary:\n got %s\nwant %s", got, want)
+	}
+	list := c.json("GET", "/v1/flows/emi_payment_issue/calls", vera, nil, 200)["calls"].([]any)
+	for _, call := range list {
+		m := call.(map[string]any)
+		if m["call_id"] == "AJ_c3" && toJSON(m["checks"]) != `[]` {
+			t.Fatalf("call without checks: %v", m["checks"])
+		}
+	}
+}
