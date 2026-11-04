@@ -1,0 +1,262 @@
+# The whole platform on your laptop, for building and testing before you push.
+# Start it with `make dev` from the repo folder (see dev/README.md); this file
+# reads its settings from dev/.env, which `make dev` creates the first time.
+#
+# Same code as EC2, different plumbing:
+#   EC2                                   here
+#   Caddy, HTTPS, PUBLIC_HOST             Vite dev server, http://localhost:3000 (hot reload)
+#   LiveKit Cloud (+ phone numbers)       a local LiveKit server (browser test calls only)
+#   agent image, deployed by GitHub       the same image, running your files, restarting on changes
+#   LiteLLM with its own Postgres         LiteLLM without a database
+#   Keycloak `start`                      Keycloak `start-dev`, demo users made by dev/seed.py
+#
+# Every port is bound to 127.0.0.1: nothing here is reachable from your network.
+name: voice-local
+
+x-logging: &logging
+  driver: json-file
+  options: { max-size: 10m, max-file: "2" }
+
+services:
+  # ── Data and sign-in ──
+
+  platform-db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: platform
+      POSTGRES_PASSWORD: ${PLATFORM_DB_PASSWORD:?run make dev}
+      POSTGRES_DB: platform
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U platform -d platform"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+    ports: ["127.0.0.1:5433:5432"]
+    volumes: [platform_db:/var/lib/postgresql/data]
+    logging: *logging
+
+  keycloak-db-init:
+    image: postgres:16
+    restart: "no"
+    environment:
+      PGHOST: platform-db
+      PGUSER: platform
+      PGDATABASE: platform
+      PGPASSWORD: ${PLATFORM_DB_PASSWORD}
+    entrypoint: ["sh", "-c"]
+    command:
+      - psql -tAc "SELECT 1 FROM pg_database WHERE datname = 'keycloak'" | grep -q 1 || psql -c "CREATE DATABASE keycloak"
+    depends_on:
+      platform-db: { condition: service_healthy }
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.8.1
+    command: ["start-dev"]
+    environment:
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://platform-db:5432/keycloak
+      KC_DB_USERNAME: platform
+      KC_DB_PASSWORD: ${PLATFORM_DB_PASSWORD}
+      KC_HTTP_RELATIVE_PATH: /auth
+      # Browsers reach Keycloak through Flow Studio's dev server, as through Caddy on EC2.
+      KC_HOSTNAME: http://localhost:3000/auth
+      KC_HOSTNAME_ADMIN: http://localhost:8180/auth
+      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true" # the config service reads keys via http://keycloak:8080
+      KC_HEALTH_ENABLED: "true"
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD}
+    mem_limit: 1536m
+    ports: ["127.0.0.1:8180:8080"]
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/9000 && printf 'GET /auth/health/ready HTTP/1.0\\r\\n\\r\\n' >&3 && grep -q '\"UP\"' <&3"]
+      interval: 5s
+      timeout: 5s
+      retries: 60
+      start_period: 30s
+    depends_on:
+      keycloak-db-init: { condition: service_completed_successfully }
+    logging: *logging
+
+  # ── The platform ──
+
+  litellm:
+    image: ghcr.io/berriai/litellm:v1.106.3
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    volumes: [./litellm-config.yaml:/app/config.yaml:ro]
+    environment:
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY}
+      # Your own development keys (dev/.env). Empty: Flow Studio, flows, reviews and
+      # integrations all work; only spoken test calls and "Describe it" need them.
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      DEEPGRAM_API_KEY: ${DEEPGRAM_API_KEY:-}
+    ports: ["127.0.0.1:4000:4000"]
+    logging: *logging
+
+  config-service:
+    build: ../config-service
+    image: voice-local/config-service
+    environment:
+      DATABASE_URL: postgres://platform:${PLATFORM_DB_PASSWORD}@platform-db:5432/platform?sslmode=disable
+      ADMIN_TOKEN: ${CONFIG_ADMIN_TOKEN}
+      RUNTIME_TOKEN: ${CONFIG_RUNTIME_TOKEN}
+      OIDC_ISSUER: http://localhost:3000/auth/realms/voice-platform
+      OIDC_JWKS_URL: http://keycloak:8080/auth/realms/voice-platform/protocol/openid-connect/certs
+      # What the browser connects to for test calls: the local LiveKit server.
+      LIVEKIT_URL: ws://localhost:7880
+      LIVEKIT_API_KEY: devkey
+      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET}
+      LITELLM_URL: http://litellm:4000
+      LITELLM_API_KEY: ${LITELLM_MASTER_KEY}
+      FLOW_BUILDER_MODEL: flow-builder
+      INTEGRATION_SECRETS_PUBLIC_KEY: ${INTEGRATION_SECRETS_PUBLIC_KEY}
+      INTEGRATION_ALLOWED_HOSTS: ${INTEGRATION_ALLOWED_HOSTS:-}
+    ports: ["127.0.0.1:8080:8080"]
+    healthcheck:
+      test: ["CMD", "/config-service", "-healthcheck"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    depends_on:
+      platform-db: { condition: service_healthy }
+    logging: *logging
+
+  # Flow Studio from your files, with hot reload. /api and /auth are passed on as
+  # Caddy does on EC2 (flow-studio/vite.config.ts).
+  studio:
+    image: node:22-alpine
+    working_dir: /app
+    # npm ci only when package-lock.json changed since the last install.
+    command:
+      - sh
+      - -c
+      - >-
+        h=$$(sha1sum package-lock.json | cut -c1-40);
+        [ "$$(cat node_modules/.installed 2>/dev/null)" = "$$h" ] ||
+        { npm ci --legacy-peer-deps --no-audit --no-fund && echo "$$h" > node_modules/.installed; } &&
+        exec npx vite --host 0.0.0.0
+    environment:
+      API_PROXY_TARGET: http://config-service:8080
+      KEYCLOAK_PROXY_TARGET: http://keycloak:8080
+      VITE_POLL: "1"
+    volumes:
+      - ../flow-studio:/app
+      - studio_node_modules:/app/node_modules # Linux packages, apart from your Mac's
+    ports: ["127.0.0.1:3000:3000"]
+    logging: *logging
+
+  # ── Calls ──
+
+  # LiveKit on your laptop: WebRTC on 7881/tcp and 7882/udp, advertised as 127.0.0.1.
+  livekit:
+    image: livekit/livekit-server:v1.13.9
+    command: ["--config", "/etc/livekit.yaml"]
+    volumes: [./livekit.yaml:/etc/livekit.yaml:ro]
+    environment:
+      LIVEKIT_KEYS: "devkey: ${LIVEKIT_API_SECRET}"
+    ports:
+      - "127.0.0.1:7880:7880"
+      - "127.0.0.1:7881:7881"
+      - "127.0.0.1:7882:7882/udp"
+    logging: *logging
+
+  # The voice agent: the production image running your files (mounted). It
+  # shares LiveKit's network, so the 127.0.0.1 LiveKit advertises works for it too.
+  agent:
+    build: ..
+    image: voice-local/agent
+    network_mode: service:livekit
+    # --dev: development logging. watchfiles restarts it when you save agent.py,
+    # log_privacy.py or flow_engine/ (polling: Docker Desktop doesn't always pass
+    # file events into containers). A test call in progress ends on a restart.
+    command:
+      - python
+      - -m
+      - watchfiles
+      - --filter
+      - python
+      - --sigint-timeout
+      - "5"
+      - python -m livekit.agents start --dev agent.py
+      - agent.py
+      - log_privacy.py
+      - flow_engine
+    volumes:
+      - ../agent.py:/app/agent.py:ro
+      - ../log_privacy.py:/app/log_privacy.py:ro
+      - ../flow_engine:/app/flow_engine:ro
+      - ../flows:/app/flows:ro
+    environment:
+      LIVEKIT_URL: ws://localhost:7880
+      LIVEKIT_API_KEY: devkey
+      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET}
+      CONFIG_SERVICE_URL: http://config-service:8080
+      CONFIG_SERVICE_TOKEN: ${CONFIG_RUNTIME_TOKEN}
+      LITELLM_URL: http://litellm:4000
+      LITELLM_API_KEY: ${LITELLM_MASTER_KEY}
+      CARTESIA_API_KEY: ${CARTESIA_API_KEY:-}
+      RESUME_KEY: ${RESUME_KEY}
+      INTEGRATION_SECRETS_KEY: ${INTEGRATION_SECRETS_KEY}
+      INTEGRATION_DEMO_BANK_TOKEN: Bearer ${DEMO_BANK_TOKEN}
+      NOISE_CANCELLATION: "off" # LiveKit Cloud only
+      IGNORE_CPU_LOAD: "on" # see agent.py: a busy laptop mustn't block test calls
+      WATCHFILES_FORCE_POLLING: "true" # file changes from your Mac, for the restart
+    depends_on:
+      livekit: { condition: service_started }
+      config-service: { condition: service_healthy }
+    logging: *logging
+
+  # ── Systems flows call (made-up data) ──
+
+  demo-bank:
+    build: ../infra/demo-bank
+    image: voice-local/demo-bank
+    environment:
+      DEMO_BANK_TOKEN: ${DEMO_BANK_TOKEN}
+    ports: ["127.0.0.1:8900:8000"]
+    logging: *logging
+
+  emi-core:
+    build: ../examples/emi-mcp
+    image: voice-local/emi-mcp
+    environment:
+      EMI_MCP_ROLE: core
+      EMI_MCP_TOKEN: ${EMI_CORE_TOKEN}
+    ports: ["127.0.0.1:8901:8000"]
+    logging: *logging
+
+  emi-helpdesk:
+    image: voice-local/emi-mcp
+    environment:
+      EMI_MCP_ROLE: helpdesk
+      EMI_MCP_TOKEN: ${EMI_HELPDESK_TOKEN}
+    ports: ["127.0.0.1:8902:8000"]
+    depends_on: [emi-core] # built by emi-core
+    logging: *logging
+
+  # ── First-time setup ──
+
+  # Demo users, workspaces, flows and integrations. Runs on every `make dev` and
+  # only adds what's missing, so your own changes stay.
+  seed:
+    image: python:3.12-slim
+    restart: "no"
+    working_dir: /repo
+    command: ["python", "-u", "dev/seed.py"]
+    volumes: ["..:/repo:ro"]
+    environment:
+      PUBLIC_URL: http://localhost:3000
+      PUBLIC_HOST: localhost:3000
+      KEYCLOAK_ADMIN_URL: http://keycloak:8080/auth
+      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD}
+      CONFIG_SERVICE_URL: http://config-service:8080
+      CONFIG_ADMIN_TOKEN: ${CONFIG_ADMIN_TOKEN}
+      DEV_USER_PASSWORD: ${DEV_USER_PASSWORD}
+      EMI_CORE_TOKEN: ${EMI_CORE_TOKEN}
+      EMI_HELPDESK_TOKEN: ${EMI_HELPDESK_TOKEN}
+    depends_on:
+      keycloak: { condition: service_healthy }
+      config-service: { condition: service_healthy }
+
+volumes:
+  platform_db:
+  studio_node_modules:

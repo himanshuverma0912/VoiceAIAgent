@@ -4,7 +4,12 @@ version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "cryptography~=50.0",
+    "livekit-agents[cartesia,deepgram,mcp,openai]~=1.8.8",
+    "livekit-plugins-noise-cancellation~=0.3.2",
+    "python-dotenv~=1.0",
+]
 
 [tool.pytest.ini_options]
 # Lets `pytest` find the flow_engine package from the repo folder.
