@@ -94,6 +94,9 @@ func texts(f *Flow) []located {
 	if f.Greeting != "" {
 		out = append(out, located{"greeting", f.Greeting})
 	}
+	if f.ReplyCheckLine != "" {
+		out = append(out, located{"settings.reply_check_line", f.ReplyCheckLine})
+	}
 	out = append(out, toolInputTexts("tools", f.Tools)...)
 	for _, n := range f.Nodes {
 		base := "nodes." + n.ID
@@ -178,6 +181,35 @@ func toolNameProblems(f *Flow) []string {
 	return problems
 }
 
+// replyCheckProblems: each check is listed once, on every step or on a step on top of those.
+func replyCheckProblems(f *Flow) []string {
+	var problems []string
+	everywhere := map[string]bool{}
+	for i, name := range f.ReplyChecks {
+		if everywhere[name] {
+			problems = append(problems, fmt.Sprintf("settings.reply_checks[%d]: '%s' is already in the list", i, name))
+		}
+		everywhere[name] = true
+	}
+	for _, n := range f.Nodes {
+		if n.Type != "agent" {
+			continue
+		}
+		here := map[string]bool{}
+		for i, name := range n.ReplyChecks {
+			loc := fmt.Sprintf("nodes.%s.reply_checks[%d]", n.ID, i)
+			switch {
+			case everywhere[name]:
+				problems = append(problems, fmt.Sprintf("%s: '%s' already runs on every step (settings.reply_checks); remove it here", loc, name))
+			case here[name]:
+				problems = append(problems, fmt.Sprintf("%s: '%s' is already in the list", loc, name))
+			}
+			here[name] = true
+		}
+	}
+	return problems
+}
+
 func isBuiltinVariable(name string) bool {
 	for _, b := range BuiltinVariables {
 		if b == name {
@@ -255,6 +287,7 @@ func checkFlow(f *Flow) []string {
 		}
 	}
 	problems = append(problems, toolNameProblems(f)...)
+	problems = append(problems, replyCheckProblems(f)...)
 	for _, n := range f.Nodes {
 		for i, t := range n.Transitions {
 			for _, c := range t.Capture {

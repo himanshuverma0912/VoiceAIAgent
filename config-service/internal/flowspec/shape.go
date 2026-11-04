@@ -28,6 +28,10 @@ var (
 	simpleFields = map[string]bool{"phone": true, "email": true, "address": true, "date_of_birth": true}
 )
 
+// ReplyChecks are the checks the voice agent can run on what it says before the
+// caller hears it (flow_engine/reply_checks.py; the same list as spec.REPLY_CHECKS).
+var ReplyChecks = []string{"mask_long_numbers", "amounts_from_tools", "no_promises"}
+
 // BuiltinFields are the field types a collect node can ask for without a description.
 var BuiltinFields = []string{"name", "phone", "email", "address", "date_of_birth", "digits"}
 
@@ -40,6 +44,8 @@ type Flow struct {
 	Greeting             string
 	AllowEndCallAnywhere bool
 	ResumeKeep           []string  // settings.resume.keep: values kept for a resumed call
+	ReplyChecks          []string  // settings.reply_checks: on every step
+	ReplyCheckLine       string    // settings.reply_check_line
 	Tools                []ToolUse // offered on every agent step
 	StartNode            string
 	Nodes                []*Node // in file order
@@ -52,6 +58,7 @@ type Node struct {
 	Instructions string
 	Transitions  []Transition // agent
 	Tools        []ToolUse    // agent
+	ReplyChecks  []string     // agent: on top of the flow's
 	Fields       []Field      // collect
 	Next         string       // collect, api
 	Goodbye      string       // end
@@ -381,7 +388,7 @@ func (s *shape) flow(v any) *Flow {
 		f.AllowEndCallAnywhere, _ = s.boolean("allow_end_call_anywhere", v)
 	}
 	if v, ok := s.field("", o, "settings", false); ok {
-		f.ResumeKeep = s.settings(v)
+		f.ResumeKeep, f.ReplyChecks, f.ReplyCheckLine = s.settings(v)
 	}
 	if v, ok := o.Get("tools"); ok {
 		f.Tools = s.toolUses("tools", v)
@@ -401,11 +408,12 @@ func (s *shape) flow(v any) *Flow {
 	return f
 }
 
-func (s *shape) settings(v any) (resumeKeep []string) {
+func (s *shape) settings(v any) (resumeKeep, checks []string, line string) {
 	const loc = "settings"
-	o, ok := s.model(loc, v, "FlowSettings", "language", "llm_model", "llm_temperature", "stt_model", "tts_voice_id", "resume")
+	o, ok := s.model(loc, v, "FlowSettings", "language", "llm_model", "llm_temperature", "stt_model", "tts_voice_id", "resume",
+		"reply_checks", "reply_check_line")
 	if !ok {
-		return nil
+		return nil, nil, ""
 	}
 	if v, ok := o.Get("language"); ok {
 		if lang, ok := s.str(at(loc, "language"), v, false); ok && !languageRE.MatchString(lang) {
@@ -421,7 +429,28 @@ func (s *shape) settings(v any) (resumeKeep []string) {
 	if v, ok := o.Get("resume"); ok {
 		resumeKeep = s.resume(at(loc, "resume"), v)
 	}
-	return resumeKeep
+	if v, ok := o.Get("reply_checks"); ok {
+		checks = s.replyChecks(at(loc, "reply_checks"), v)
+	}
+	if v, ok := o.Get("reply_check_line"); ok {
+		line, _ = s.str(at(loc, "reply_check_line"), v, false)
+	}
+	return resumeKeep, checks, line
+}
+
+// replyChecks checks a list of reply check names.
+func (s *shape) replyChecks(loc string, v any) []string {
+	items, ok := s.list(loc, v, false)
+	if !ok {
+		return nil
+	}
+	var out []string
+	for i, item := range items {
+		if name, ok := s.literal(idx(loc, i), item, ReplyChecks...); ok {
+			out = append(out, name)
+		}
+	}
+	return out
 }
 
 // resume checks settings.resume: {"enabled": bool, "keep": [identifiers]}.
@@ -461,7 +490,7 @@ func (s *shape) node(loc, id string, v any) *Node {
 	switch typ {
 	case "agent":
 		n.Type = "agent"
-		s.extraKeys(loc, o, "type", "instructions", "transitions", "on_enter", "tools")
+		s.extraKeys(loc, o, "type", "instructions", "transitions", "on_enter", "tools", "reply_checks")
 		if v, ok := s.field(loc, o, "instructions", true); ok {
 			n.Instructions, _ = s.str(at(loc, "instructions"), v, true)
 		}
@@ -479,6 +508,9 @@ func (s *shape) node(loc, id string, v any) *Node {
 		}
 		if v, ok := o.Get("tools"); ok {
 			n.Tools = s.toolUses(at(loc, "tools"), v)
+		}
+		if v, ok := o.Get("reply_checks"); ok {
+			n.ReplyChecks = s.replyChecks(at(loc, "reply_checks"), v)
 		}
 	case "collect":
 		n.Type = "collect"

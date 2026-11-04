@@ -43,6 +43,14 @@ who hangs up mid-flow carry on from the same step if they call back within
 15 minutes (see resume.py). "keep" lists the captured, collected or saved
 values to keep for the call back; everything else is asked again.
 
+Reply checks
+------------
+Before the caller hears a sentence, the agent can check it (see
+reply_checks.py): settings.reply_checks lists the checks for every step, a
+conversation step's "reply_checks" adds more there, and
+settings.reply_check_line is what the caller hears when a check stops a
+reply (each check has an English and a Hindi default).
+
 Variables
 ---------
 Text fields can use {{variable}}. Built-ins: caller_number, dialed_number,
@@ -84,6 +92,11 @@ VARIABLE_RE = re.compile(r"\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}")
 # capitals and "-", so the tool part allows them.
 TOOL_PATTERN = r"^[a-z][a-z0-9_]{0,31}\.[A-Za-z0-9_-]{1,64}$"
 TOOL_MESSAGE = "must be '<integration>.<tool>', e.g. 'demo_bank.get_card_balance'"
+
+# Checks on what the agent says (reply_checks.py). The config service keeps
+# the same list (flowspec.ReplyChecks).
+REPLY_CHECKS = ("mask_long_numbers", "amounts_from_tools", "no_promises")
+ReplyCheckName = Literal["mask_long_numbers", "amounts_from_tools", "no_promises"]
 
 
 class _Strict(BaseModel):
@@ -213,6 +226,9 @@ class AgentNode(_Strict):
         description="'speak': the agent talks first when this node starts; 'wait': it listens first",
     )
     tools: list[ToolUse] = Field(default_factory=list, description="Tools the LLM may use on this step")
+    reply_checks: list[ReplyCheckName] = Field(
+        default_factory=list, description="Checks on what the agent says, on this step on top of the flow's"
+    )
 
 
 class CollectNode(_Strict):
@@ -263,6 +279,12 @@ class FlowSettings(_Strict):
     stt_model: str | None = Field(default=None, description="Deepgram model, e.g. 'nova-3'")
     tts_voice_id: str | None = Field(default=None, description="Cartesia voice id")
     resume: ResumeSettings = Field(default_factory=ResumeSettings)
+    reply_checks: list[ReplyCheckName] = Field(
+        default_factory=list, description="Checks on every sentence before the caller hears it, on every step"
+    )
+    reply_check_line: str = Field(
+        default="", description="Said instead when a check stops a reply (empty: a default in the flow's language)"
+    )
 
 
 class Flow(_Strict):
@@ -313,6 +335,8 @@ def _texts(flow: Flow) -> list[tuple[str, str]]:
     out += [(f"guardrails[{i}]", g) for i, g in enumerate(flow.guardrails)]
     if flow.greeting:
         out.append(("greeting", flow.greeting))
+    if flow.settings.reply_check_line:
+        out.append(("settings.reply_check_line", flow.settings.reply_check_line))
     out += _tool_input_texts("tools", flow.tools)
     for nid, node in flow.nodes.items():
         if isinstance(node, ApiNode):
@@ -397,6 +421,7 @@ def check_flow(flow: Flow) -> list[str]:
                 elif target == nid:
                     problems.append(f"nodes.{nid}.{key}: a node can't move to itself")
     problems += _tool_name_problems(flow)
+    problems += _reply_check_problems(flow)
     for nid, node in flow.nodes.items():
         if isinstance(node, AgentNode):
             for i, t in enumerate(node.transitions):
@@ -488,6 +513,28 @@ def _tool_name_problems(flow: Flow) -> list[str]:
                     f"nodes.{nid}.transitions[{k}]: '{tr.tool_name}' is also the name of a tool on every step; "
                     "rename the transition"
                 )
+    return problems
+
+
+def _reply_check_problems(flow: Flow) -> list[str]:
+    """Each check is listed once: on every step, or on a step on top of those."""
+    problems: list[str] = []
+    everywhere: set[str] = set()
+    for i, name in enumerate(flow.settings.reply_checks):
+        if name in everywhere:
+            problems.append(f"settings.reply_checks[{i}]: '{name}' is already in the list")
+        everywhere.add(name)
+    for nid, node in flow.nodes.items():
+        if not isinstance(node, AgentNode):
+            continue
+        here: set[str] = set()
+        for i, name in enumerate(node.reply_checks):
+            loc = f"nodes.{nid}.reply_checks[{i}]"
+            if name in everywhere:
+                problems.append(f"{loc}: '{name}' already runs on every step (settings.reply_checks); remove it here")
+            elif name in here:
+                problems.append(f"{loc}: '{name}' is already in the list")
+            here.add(name)
     return problems
 
 

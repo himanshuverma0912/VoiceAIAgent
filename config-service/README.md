@@ -105,7 +105,7 @@ All `/v1` routes need `Authorization: Bearer <token>`. Through Caddy they're at
 | `PUT /v1/flows/{flow_id}/layout` | maker | Where Flow Studio draws the nodes (not part of the flow) |
 | `POST /v1/flows/{flow_id}/test-sessions` | maker or checker | "Test call": a LiveKit room token with the agent dispatched to run the saved draft (5 minutes; 20 per person per hour) |
 | `GET /v1/flows/{flow_id}/calls?days=7&channel=phone&limit=50` | member | Recent calls (channel `phone`, `studio_test` or `all`) |
-| `GET /v1/flows/{flow_id}/calls/summary?days=7&channel=phone` | member | Outcomes, durations, reply speed, where callers drop off, per version and per day |
+| `GET /v1/flows/{flow_id}/calls/summary?days=7&channel=phone` | member | Outcomes, durations, reply speed, where callers drop off, tools and reply checks, per version and per day |
 | `GET /v1/catalog` | signed in | The models flows may use (LLMs, speech-to-text models, voices); admins also see switched-off ones |
 | `PUT /v1/catalog/{kind}/{model_id}` | platform-admin | Add or change one: kind `llm` (LiteLLM alias), `stt` (Deepgram model) or `tts_voice` (Cartesia voice id); `{"label", "notes", "languages": [], "workspaces": [], "enabled": true}` |
 | `DELETE /v1/catalog/{kind}/{model_id}` | platform-admin | Remove one nothing uses (409 lists the flows that still do) |
@@ -246,6 +246,31 @@ Call history counts dropped calls that left a point and calls that resumed
 
 Deploy this service before an agent with drop-resume: an older service
 refuses call records that mention it.
+
+## Reply checks
+
+Before the caller hears a sentence, the voice agent can check it
+(`flow_engine/reply_checks.py`). A flow turns checks on in
+`settings.reply_checks` (every step), and a conversation step can add more in
+its own `reply_checks`:
+
+| Check | What it does |
+|---|---|
+| `amounts_from_tools` | An amount (₹, Rs, rupees, lakh, crore) must be one a tool returned on this call, one the caller said, or one written in the flow; rounding to the rupee is fine. Otherwise the sentence is stopped, the caller hears the safe line, and the AI gets one more try with a reminder. |
+| `mask_long_numbers` | 12 or more digits in a row (a card, account or Aadhaar number) are read as "ending in 3456" (Hindi flows: "आखिरी चार अंक 3456"). |
+| `no_promises` | "waived", "guaranteed", "approved", "you'll get a refund" and the like are stopped, unless negated ("I can't guarantee"). |
+
+`settings.reply_check_line` is what the caller hears when a check stops a
+sentence (by default a line in English, or Hindi for `"language": "hi"`). The
+config service refuses unknown check names, a check listed twice, or a step
+repeating one that already runs on every step. Call history records which
+check fired on which step and whether it fixed or stopped the sentence, never
+the sentence itself (Flow Studio: Calls → Reply checks). Adding a check means
+writing it in `reply_checks.py`, then adding its name to `REPLY_CHECKS` in
+`flow_engine/spec.py`, `flowspec.ReplyChecks` here and Flow Studio's list.
+
+Deploy this service before an agent that has reply checks: an older service
+refuses call records that list them.
 
 ## AI flow builder
 

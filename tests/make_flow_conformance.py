@@ -327,6 +327,29 @@ CASES += [
     case("resume is a list", set_path(RESUME, [])),
 ]
 
+RC = ["settings", "reply_checks"]
+CASES += [
+    case(
+        "valid reply checks",
+        many(
+            set_path(RC, ["amounts_from_tools", "no_promises"]),
+            set_path(["settings", "reply_check_line"], "Ek minute, {{caller_number}}."),
+            set_path(["nodes", "ask", "reply_checks"], ["mask_long_numbers"]),
+        ),
+    ),
+    case("unknown reply check", set_path(RC, ["no_promises", "check_spelling"])),
+    case("reply checks not a list", set_path(RC, "no_promises")),
+    case("reply check listed twice", set_path(RC, ["no_promises", "no_promises"])),
+    case(
+        "step reply check already on every step",
+        many(set_path(RC, ["no_promises"]), set_path(["nodes", "ask", "reply_checks"], ["mask_long_numbers", "no_promises"])),
+    ),
+    case("step reply check listed twice", set_path(["nodes", "ask", "reply_checks"], ["no_promises", "no_promises"])),
+    case("reply checks on a collect step", set_path(["nodes", "details", "reply_checks"], ["no_promises"])),
+    case("reply check line unknown variable", set_path(["settings", "reply_check_line"], "Sorry {{customer}}.")),
+    case("reply check line not a string", set_path(["settings", "reply_check_line"], 5)),
+]
+
 CASES.append({"name": "top level is a list", "flow": []})
 
 

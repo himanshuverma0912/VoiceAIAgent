@@ -2,6 +2,9 @@
 
 The test drives it through the caller's messages:
   - "CALL <tool> {json}"  -> the LLM calls that tool (it must be available at this step)
+  - a message in .replies  -> the LLM says the next scripted reply for it, in
+                             small pieces like a real stream (a reply that is
+                             stopped and retried takes the next one)
   - anything else         -> the LLM replies "[<step>] ok", where <step> is the
                              flow node whose instructions it was given, so tests
                              can see which node is speaking.
@@ -28,6 +31,9 @@ class ScriptedLLM(llm.LLM):
     def __init__(self) -> None:
         super().__init__()
         self.requests: list[dict] = []
+        # caller message -> what the LLM says to it, in order (for reply-check tests,
+        # so a made-up amount never appears in what the caller said).
+        self.replies: dict[str, list[str]] = {}
 
     @property
     def model(self) -> str:
@@ -72,6 +78,12 @@ class _ScriptedStream(llm.LLMStream):
         step = (STEP_RE.findall(instructions) or ["task"])[-1]
         self._llm.requests.append({"step": step, "instructions": instructions, "tools": sorted(tools)})
 
+        users = [i for i in items if i.type == "message" and i.role == "user"]
+        heard = (users[-1].text_content or "").strip() if users else ""
+        if self._llm.replies.get(heard):
+            self._say_in_pieces(self._llm.replies[heard].pop(0))
+            return
+
         last = items[-1] if items else None
         if last is not None and last.type == "message" and last.role == "user":
             text = (last.text_content or "").strip()
@@ -83,6 +95,12 @@ class _ScriptedStream(llm.LLMStream):
                 self._call(name, args or "{}")
                 return
         self._say(f"[{step}] ok")
+
+    def _say_in_pieces(self, text: str, size: int = 5) -> None:
+        for i in range(0, len(text), size):
+            self._event_ch.send_nowait(
+                llm.ChatChunk(id=str(uuid.uuid4()), delta=llm.ChoiceDelta(role="assistant", content=text[i : i + size]))
+            )
 
     def _say(self, text: str) -> None:
         self._event_ch.send_nowait(

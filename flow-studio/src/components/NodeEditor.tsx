@@ -20,6 +20,7 @@ import {
   type Transition,
   type ValueType,
 } from "../spec";
+import { ReplyChecks } from "./ReplyChecks";
 import { ToolInputs, ToolLabel, ToolSelect, ToolUses } from "./Tools";
 import { Check, Field, ListInput, VarText } from "./ui";
 
@@ -165,6 +166,19 @@ function AgentForm(p: Props & { node: AgentNode; otherIds: string[] }) {
           vars={p.vars}
           editable={ed}
           change={(uses) => p.change((n) => (uses.length ? ((n as AgentNode).tools = uses) : delete (n as AgentNode).tools))}
+        />
+      </div>
+
+      <div className="section">
+        <h3 style={{ marginBottom: 6 }}>Reply checks on this step ({p.node.reply_checks?.length ?? 0} more)</h3>
+        <p className="hint" style={{ marginTop: 0 }}>
+          On top of the flow's (Settings). Each sentence the agent says here is checked before the caller hears it.
+        </p>
+        <ReplyChecks
+          selected={p.node.reply_checks ?? []}
+          everyStep={p.flow.settings?.reply_checks ?? []}
+          editable={ed}
+          change={(checks) => p.change((n) => (checks.length ? ((n as AgentNode).reply_checks = checks) : delete (n as AgentNode).reply_checks))}
         />
       </div>
 

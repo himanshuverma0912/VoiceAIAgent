@@ -246,10 +246,26 @@ def _report_steps(room: rtc.Room):
     return report
 
 
+def _report_checks(room: rtc.Room):
+    """Test calls only: tell Flow Studio when a reply check changed or stopped a
+    sentence, so the test-call panel can show it. Only which check, on which
+    step and what it did ("fix" or "stop"): never the sentence."""
+    pending: set[asyncio.Task] = set()
+
+    def report(check: str, action: str, node_id: str) -> None:
+        if room.isconnected():
+            data = json.dumps({"check": check, "action": action, "node": node_id}).encode()
+            task = asyncio.create_task(room.local_participant.publish_data(data, reliable=True, topic="flow.check"))
+            pending.add(task)
+            task.add_done_callback(pending.discard)
+
+    return report
+
+
 def _both(*hooks):
-    def call(node_id: str) -> None:
+    def call(*args) -> None:
         for hook in hooks:
-            hook(node_id)
+            hook(*args)
 
     return call
 
@@ -311,6 +327,7 @@ async def entrypoint(ctx: agents.JobContext) -> None:
         on_node=_both(_report_steps(ctx.room), recorder.node_entered),
         end_call=lambda goodbye, desc: default_end_call(goodbye, desc, on_called=recorder.agent_ended_call),
         tools=tools,
+        on_check=_both(recorder.reply_check, _report_checks(ctx.room)) if studio_test else recorder.reply_check,
     )
     # Drop-resume: phone calls only, when the flow allows it. A point left by this
     # caller's dropped call (within 15 minutes) is claimed, which deletes it.
@@ -330,6 +347,7 @@ async def entrypoint(ctx: agents.JobContext) -> None:
             "flow_source": resolved.source,
             "draft_checksum": resolved.checksum,
             "integrations": sorted(resolved.integrations),
+            "reply_checks": list(flow.settings.reply_checks),
             "resumed": point is not None,
         },
     )

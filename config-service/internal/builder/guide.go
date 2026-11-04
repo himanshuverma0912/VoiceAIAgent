@@ -61,6 +61,7 @@ Top level (all keys shown; no other keys are allowed anywhere):
 }
 Ids (step ids, field names, capture names, transition names): lower-case letters, digits and _, starting with a letter, at most 48 characters, e.g. "verify_customer".
 Don't set settings.llm_model, settings.stt_model or settings.tts_voice_id (the defaults are used).
+Reply checks (optional) check each sentence before the caller hears it: "settings": {..., "reply_checks": [...], "reply_check_line": "<what to say when a check stops a sentence, in the flow's language; or omit>"}. The checks: "amounts_from_tools" (an amount must come from a tool, the caller or the flow's own text), "mask_long_numbers" (12+ digit numbers such as card or account numbers are read as "ending in 3456"), "no_promises" (no "waived", "guaranteed", "approved", "you'll get a refund"). They are off unless someone turns them on: add them only when the description asks for checks on what the agent says. An agent step may add checks of its own with "reply_checks", but not ones already in settings.
 Language: "hi" for Hindi-first lines (the persona should say to reply in the caller's language: Hindi in Devanagari, English in English, a mix as a mix), "en" for English-only, "multi" for several languages.
 
 Agent step:
