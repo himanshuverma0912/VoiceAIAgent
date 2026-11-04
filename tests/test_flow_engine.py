@@ -67,12 +67,19 @@ async def settle(session: AgentSession) -> None:
             continue
         await asyncio.sleep(0.05)
         task = session._update_activity_atask
-        if task is None or task.done():
+        # An agent that just finished a task (e.g. the date of birth) pauses its
+        # speech while the next one takes over; a reply asked for then is refused
+        # ("speech scheduling is draining/pausing"). Wait until that's over too.
+        activity = session._activity
+        if (task is None or task.done()) and (activity is None or not activity.scheduling_paused):
             try:
                 await session.wait_for_idle()
-                return
             except ActivityClosedError:
-                pass
+                await asyncio.sleep(0.02)
+                continue
+            activity = session._activity
+            if activity is None or not activity.scheduling_paused:
+                return
         await asyncio.sleep(0.02)
     raise TimeoutError("session never settled")
 
