@@ -87,6 +87,10 @@ services:
       LITELLM_URL: http://litellm:4000
       LITELLM_API_KEY: ${LITELLM_MASTER_KEY:-}
       FLOW_BUILDER_MODEL: ${FLOW_BUILDER_MODEL:-flow-builder}
+      # Workspace integrations (MCP servers developers add themselves): the
+      # agent's public key, to seal their tokens, and the hosts they may call.
+      INTEGRATION_SECRETS_PUBLIC_KEY: ${INTEGRATION_SECRETS_PUBLIC_KEY:-}
+      INTEGRATION_ALLOWED_HOSTS: ${INTEGRATION_ALLOWED_HOSTS:-}
     ports:
       # Same as LiteLLM: only from the EC2 machine itself (or an SSH tunnel).
       - "127.0.0.1:8080:8080"

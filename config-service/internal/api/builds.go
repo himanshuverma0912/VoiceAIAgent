@@ -159,7 +159,7 @@ func (s *Server) startBuild(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, snap)
 }
 
-// builderTools: the integration tools a flow of this workspace may use.
+// builderTools: the integration tools a draft of this workspace may use.
 func (s *Server) builderTools(ctx context.Context, workspace string) ([]builder.Tool, error) {
 	list, err := s.Store.ListIntegrations(ctx)
 	if err != nil {
@@ -167,10 +167,11 @@ func (s *Server) builderTools(ctx context.Context, workspace string) ([]builder.
 	}
 	var out []builder.Tool
 	for _, i := range list {
-		if !i.AllowedFor(workspace) {
+		d := i.DraftDef()
+		if d == nil || !d.AllowedFor(workspace) {
 			continue
 		}
-		for _, t := range i.Tools {
+		for _, t := range d.Tools {
 			bt := builder.Tool{Ref: i.IntegrationID + "." + t.Name, Description: t.Description, Outputs: t.Outputs, Sensitive: t.Sensitive}
 			for _, in := range t.Inputs {
 				bt.Inputs = append(bt.Inputs, builder.ToolInput{

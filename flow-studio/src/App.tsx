@@ -84,7 +84,7 @@ function Routes({ me }: { me: Me }) {
   const calls = /^\/flows\/([a-z][a-z0-9_]*)\/calls\/?$/.exec(path);
   if (calls) return <CallHistory key={calls[1]} flowId={calls[1]} />;
   if (/^\/admin\/models\/?$/.test(path) && me.roles.includes("platform-admin")) return <ModelCatalog />;
-  if (/^\/admin\/integrations\/?$/.test(path) && me.roles.includes("platform-admin")) return <Integrations />;
+  if (/^\/(admin\/)?integrations\/?$/.test(path)) return <Integrations me={me} />;
   if (/^\/reviews\/?$/.test(path)) return <Reviews me={me} />;
   if (/^\/workspaces\/?$/.test(path)) return <Workspaces me={me} />;
   const ws = /^\/workspaces\/([a-z][a-z0-9_-]*)\/?$/.exec(path);
@@ -101,12 +101,10 @@ function SideBar({ me, path, collapsed, onToggle }: { me: Me; path: string; coll
     { to: "/", label: "Flows", icon: <IconStudio />, current: path === "/" || path.startsWith("/flows/") },
     { to: "/reviews", label: "Reviews", icon: <IconReviews />, current: path.startsWith("/reviews"), count: waiting },
     { to: "/workspaces", label: "Workspaces", icon: <IconWorkspaces />, current: path.startsWith("/workspaces") },
+    { to: "/integrations", label: "Integrations", icon: <IconIntegrations />, current: /^\/(admin\/)?integrations/.test(path) },
   ];
   if (admin) {
-    items.push(
-      { to: "/admin/models", label: "Model catalog", icon: <IconModels />, current: path.startsWith("/admin/models") },
-      { to: "/admin/integrations", label: "Integrations", icon: <IconIntegrations />, current: path.startsWith("/admin/integrations") },
-    );
+    items.push({ to: "/admin/models", label: "Model catalog", icon: <IconModels />, current: path.startsWith("/admin/models") });
   }
   return (
     <nav className="sidebar" aria-label="Main">

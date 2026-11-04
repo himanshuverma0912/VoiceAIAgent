@@ -38,6 +38,7 @@ package main
 
 import (
 	"context"
+	"crypto/ecdh"
 	"database/sql"
 	"errors"
 	"flag"
@@ -56,6 +57,7 @@ import (
 	"github.com/himanshuverma0912/VoiceAIAgent/config-service/internal/auth"
 	"github.com/himanshuverma0912/VoiceAIAgent/config-service/internal/builder"
 	"github.com/himanshuverma0912/VoiceAIAgent/config-service/internal/livekit"
+	"github.com/himanshuverma0912/VoiceAIAgent/config-service/internal/secrets"
 	"github.com/himanshuverma0912/VoiceAIAgent/config-service/internal/store"
 )
 
@@ -159,12 +161,35 @@ func run(addr string) error {
 	if err != nil || retention < 1 || retention > 730 {
 		return errors.New("CALL_RETENTION_DAYS must be a number of days between 1 and 730")
 	}
+	// Workspace integrations: tokens are sealed for the voice agent, and the
+	// hosts they may point at are limited.
+	var secretsKey *ecdh.PublicKey
+	if raw := env("INTEGRATION_SECRETS_PUBLIC_KEY", ""); raw != "" {
+		if secretsKey, err = secrets.PublicKey(raw); err != nil {
+			return err
+		}
+		slog.Info("integration tokens can be saved (sealed for the voice agent)")
+	} else {
+		slog.Warn("INTEGRATION_SECRETS_PUBLIC_KEY not set: integrations can't save tokens")
+	}
+	hosts, err := api.ParseHostPolicy(env("INTEGRATION_ALLOWED_HOSTS", ""))
+	if err != nil {
+		return err
+	}
+	if !hosts.Limited() {
+		slog.Warn("INTEGRATION_ALLOWED_HOSTS not set: workspace integrations may point at any host but this machine's own")
+	}
+
 	go purgeOldCalls(ctx, st, retention)
 	go purgeResumePoints(ctx, st)
 
+	handler := (&api.Server{
+		Store: st, AdminToken: admin, RuntimeToken: runtime, Users: users, LiveKit: lk, Builder: flowBuilder,
+		SecretsKey: secretsKey, Hosts: hosts,
+	}).Handler()
 	srv := &http.Server{
 		Addr:              addr,
-		Handler:           (&api.Server{Store: st, AdminToken: admin, RuntimeToken: runtime, Users: users, LiveKit: lk, Builder: flowBuilder}).Handler(),
+		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      15 * time.Second,

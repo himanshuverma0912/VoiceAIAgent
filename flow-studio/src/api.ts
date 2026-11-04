@@ -163,36 +163,89 @@ export interface IntegrationTool {
   path?: string;
 }
 
-export interface Integration {
-  integration_id: string;
+/** How the agent signs in. The token itself is never shown: has_secret says one is saved. */
+export interface IntegrationAuth {
+  kind?: "" | "header" | "oauth";
+  header?: string;
+  token_url?: string;
+  client_id?: string;
+  scope?: string;
+  has_secret?: boolean;
+}
+
+/** What an integration is; it has a live one and, while a change waits for review, a pending one. */
+export interface IntegrationDef {
   kind: "mcp" | "http";
   label: string;
   notes: string;
-  url?: string; // admins only
+  url?: string; // admins and the owning workspace only
   test_url?: string;
   auth_header?: string;
   auth_env?: string;
+  auth?: IntegrationAuth;
   timeout_ms?: number;
   workspaces: string[];
   enabled: boolean;
   tools: IntegrationTool[];
+}
+
+export interface Integration extends IntegrationDef {
+  integration_id: string;
+  owner_workspace?: string; // "": a platform integration (admins)
+  live: boolean; // approved at least once
+  pending?: IntegrationDef; // a change waiting for a checker
+  pending_by?: string;
+  pending_at?: string;
+  pending_note?: string;
+  approved_by?: string;
+  approved_at?: string;
+  rejected_by?: string;
+  rejected_at?: string;
+  rejected_note?: string;
   updated_at: string;
   updated_by: string;
 }
 
-export type IntegrationInput = Omit<Integration, "integration_id" | "updated_at" | "updated_by">;
+export interface IntegrationInput extends Omit<IntegrationDef, "auth"> {
+  /** secret: typed in the clear, sealed by the server at once; empty keeps the saved one. */
+  auth?: { kind: "" | "header" | "oauth"; header?: string; token_url?: string; client_id?: string; scope?: string; secret?: string };
+  workspace?: string; // the owning workspace (makers)
+  note?: string; // for the checker
+}
+
+/** What drafts and test calls use: the change waiting for review, else the live one. */
+export function draftDef(i: Integration): IntegrationDef | null {
+  return i.pending ?? (i.live ? i : null);
+}
 
 /** A tool a flow of this workspace may use, as "<integration>.<tool>". */
 export interface OfferedTool {
   ref: string;
   integration: Integration;
   tool: IntegrationTool;
+  /** Only in a change waiting for review: drafts can use it, submitting waits for approval. */
+  pending: boolean;
 }
 
 export function offeredTools(list: Integration[] | null, workspace: string): OfferedTool[] {
-  return (list ?? [])
-    .filter((i) => i.enabled && (i.workspaces.length === 0 || i.workspaces.includes(workspace)))
-    .flatMap((i) => i.tools.map((t) => ({ ref: `${i.integration_id}.${t.name}`, integration: i, tool: t })));
+  return (list ?? []).flatMap((i) => {
+    const d = draftDef(i);
+    if (!d || !d.enabled || (d.workspaces.length > 0 && !d.workspaces.includes(workspace))) return [];
+    const live = i.live ? new Set(i.tools.map((t) => t.name)) : new Set<string>();
+    return d.tools.map((t) => ({ ref: `${i.integration_id}.${t.name}`, integration: { ...i, label: d.label }, tool: t, pending: !live.has(t.name) }));
+  });
+}
+
+/** An integration change this person may approve or turn down. */
+export function integrationForMe(me: Me, i: Integration): boolean {
+  if (!i.pending || i.pending_by === me.email) return false;
+  return i.owner_workspace ? can.approve(me, i.owner_workspace) : can.admin(me);
+}
+
+export interface DiscoveredTools {
+  server: { name: string; version: string };
+  tools: IntegrationTool[];
+  skipped: { name: string; reason: string }[];
 }
 
 export type Outcome = "completed" | "ended_early" | "caller_hung_up" | "time_limit" | "error" | "other";
@@ -309,8 +362,18 @@ export const api = {
   catalog: () => call<{ entries: CatalogEntry[] }>("GET", "/v1/catalog").then((r) => r.entries),
   integrations: () => call<{ integrations: Integration[] }>("GET", "/v1/integrations").then((r) => r.integrations),
   putIntegration: (id: string, input: IntegrationInput) =>
-    call<{ integration: Integration; created: boolean; used_by: string[] }>("PUT", `/v1/integrations/${id}`, JSON.stringify(input)),
+    call<{ integration: Integration; created: boolean; pending: boolean; used_by: string[] }>("PUT", `/v1/integrations/${id}`, JSON.stringify(input)),
   deleteIntegration: (id: string) => call<void>("DELETE", `/v1/integrations/${id}`),
+  /** Connect to an MCP server and list its tools (the secret is used for this and forgotten). */
+  discoverTools: (input: { workspace?: string; url: string; auth: NonNullable<IntegrationInput["auth"]> }) =>
+    call<DiscoveredTools>("POST", "/v1/integrations/discover", JSON.stringify(input)),
+  approveIntegration: (id: string, note: string) =>
+    call<{ integration: Integration; used_by: string[] }>("POST", `/v1/integrations/${id}/approve`, JSON.stringify({ note })),
+  rejectIntegration: (id: string, note: string) =>
+    call<{ integration: Integration }>("POST", `/v1/integrations/${id}/reject`, JSON.stringify({ note })),
+  withdrawIntegration: (id: string) => call<unknown>("POST", `/v1/integrations/${id}/withdraw`),
+  setIntegrationEnabled: (id: string, enabled: boolean) =>
+    call<{ integration: Integration }>("POST", `/v1/integrations/${id}/enabled`, JSON.stringify({ enabled })),
   putCatalog: (kind: CatalogKind, id: string, input: CatalogInput) =>
     call<{ created: boolean; used_by: string[] }>("PUT", `/v1/catalog/${kind}/${encodeURIComponent(id)}`, JSON.stringify(input)),
   deleteCatalog: (kind: CatalogKind, id: string) => call<void>("DELETE", `/v1/catalog/${kind}/${encodeURIComponent(id)}`),

@@ -93,9 +93,13 @@ All `/v1` routes need `Authorization: Bearer <token>`. Through Caddy they're at
 | `PUT /v1/flows/{flow_id}/workspace` | platform-admin | `{"workspace": "emi"}`: move the flow to another workspace |
 | `POST /v1/builds` | maker | AI flow builder: `{"workspace", "flow_id", "name", "description"}` (40 to 400,000 characters). Answers 202 with a `build_id`; the build runs in the background |
 | `GET /v1/builds/{build_id}` | whoever started it | `running` (with progress), `done` (the flow, notes for the business team, any problems left) or `failed`. Kept for an hour, in memory only |
-| `GET /v1/integrations` | signed in | The integrations offered to your workspaces and their tools (admins: all, with URLs and credential settings) |
-| `PUT /v1/integrations/{integration_id}` | platform-admin | Add or change one: `{"kind": "mcp" or "http", "label", "notes", "url", "test_url", "auth_header", "auth_env", "timeout_ms", "workspaces", "enabled", "tools": [...]}` (see Integrations) |
-| `DELETE /v1/integrations/{integration_id}` | platform-admin | Remove one nothing uses (409 lists the flows that still do) |
+| `GET /v1/integrations` | signed in | The integrations offered to your workspaces and their tools, plus your workspaces' own with any change waiting for review (admins: all, with URLs and sign-in settings; tokens are never shown) |
+| `POST /v1/integrations/discover` | maker | Connect to an MCP server and list its tools: `{"workspace", "url", "auth"}` (the token is used for this and forgotten) |
+| `PUT /v1/integrations/{integration_id}` | platform-admin, or a maker with `"workspace"` | Add or change one: `{"kind": "mcp" or "http", "label", "notes", "url", "test_url", "auth", "timeout_ms", "workspaces", "enabled", "tools": [...], "workspace", "note"}` (admins also `auth_header`, `auth_env`). Admins' changes apply at once; makers' wait for a checker (see Integrations) |
+| `POST /v1/integrations/{integration_id}/approve`, `/reject` | checker of its workspace, not the maker | The change waiting goes live (`{"note"}` optional) / is sent back (`{"note"}` required) |
+| `POST /v1/integrations/{integration_id}/withdraw` | the maker who proposed it | Take the change back (a new integration is removed) |
+| `POST /v1/integrations/{integration_id}/enabled` | maker (off), checker (on) | `{"enabled": false}` stops its tools on every call at once |
+| `DELETE /v1/integrations/{integration_id}` | platform-admin; checker of its workspace | Remove one nothing uses (409 lists the flows that still do) |
 | `GET /v1/numbers`, `PUT`/`DELETE /v1/numbers/{number}` | platform-admin | Number → flow mapping (`{"flow_id": "...", "version_pin": null}`) |
 | `GET /v1/audit?limit=100` | platform-admin | Who changed what |
 | `PUT /v1/flows/{flow_id}/layout` | maker | Where Flow Studio draws the nodes (not part of the flow) |
@@ -154,6 +158,54 @@ only `INTEGRATION_…` variables are accepted, so an entry can never send the
 agent's own keys elsewhere. REST tools that need a verified caller must use POST,
 so card digits and dates of birth never appear in URLs. **Test calls** from Flow
 Studio use the integration's `test_url` (a sandbox) when it has one.
+
+### Developers adding their own MCP servers
+
+Any maker can connect their workspace to an MCP server their team runs,
+wherever it is in the enterprise (Flow Studio → Integrations → Add an MCP
+server): give its address and how to sign in, press **Connect & load tools**,
+then mark which tools need a verified caller and which inputs the flow must
+set. It's **proposed**, and a checker of the workspace approves it, as with
+flows:
+
+| | Before approval | After approval |
+|---|---|---|
+| Drafts and test calls | can use it (and later changes waiting for review) | the latest proposal |
+| Submitting, approving, publishing a flow | refused: "waiting for a checker to approve it" | allowed |
+| Phone calls | never | the approved version only, until the next change is approved |
+
+- **Only that workspace's flows** can use it; other workspaces don't see it.
+- **Sign-in**: a token sent in a header (`{"kind": "header", "header":
+  "Authorization", "secret": "Bearer …"}`) or OAuth client credentials
+  (`{"kind": "oauth", "token_url", "client_id", "scope", "secret"}`). The secret
+  is sealed with the voice agent's public key (`INTEGRATION_SECRETS_PUBLIC_KEY`)
+  the moment it arrives: the database holds only ciphertext bound to the
+  integration's id, this service can't read it back, and Flow Studio only ever
+  shows "a token is saved". Changing the URL, test URL or token URL needs the
+  secret typed again, so a saved one is never sent somewhere new. Makers can't
+  use `auth_env` (the agent's own variables).
+- **Where it may point**: `INTEGRATION_ALLOWED_HOSTS` (host names, `*.domain`,
+  IP ranges; empty allows any host). Always refused, both here and by the
+  agent as it connects: this machine, link-local addresses (cloud instance
+  credentials live at 169.254.169.254) and the platform's own services. The
+  agent checks the address it actually resolves, and doesn't follow redirects.
+- **Switching off** is open to makers too (the way to stop a misbehaving server
+  now); switching on needs a checker.
+
+**MCP servers in another cluster.** The agent (on the EC2 machine) calls the
+server directly, so it needs a network path:
+
+- In Kubernetes, expose the MCP service on an internal load balancer or an
+  ingress with an internal host name (not a NodePort on a public IP).
+- If that cluster is in AWS: VPC peering or a Transit Gateway between its VPC
+  and the agent's (with security groups allowing the agent's private IP), or
+  a PrivateLink endpoint service in front of the load balancer for a single
+  service across accounts.
+- On-premises or another cloud: a site-to-site VPN (or Direct Connect) to the
+  agent's VPC, and the cluster's DNS reachable from the agent (a Route 53
+  Resolver outbound rule for its domain).
+- Then add the host names to `INTEGRATION_ALLOWED_HOSTS` (e.g.
+  `*.payments.bank.internal`) and give the server TLS (`https://`) and a token.
 
 **Nothing about the call is stored.** Tool inputs and answers stay in the call's
 memory; logs and call history record only which tool ran, whether it worked and

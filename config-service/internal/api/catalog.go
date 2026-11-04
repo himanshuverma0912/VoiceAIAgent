@@ -88,8 +88,19 @@ func hasLanguage(langs []string, language string) bool {
 	return false
 }
 
-// checkFlow is checkSpec plus the model catalog and the integrations, for a flow of the given workspace.
+// checkFlow is checkSpec plus the model catalog and the integrations, for a
+// draft of the given workspace (integration changes waiting for review count).
 func (s *Server) checkFlow(ctx context.Context, body []byte, flowID, workspace string) (any, []string, error) {
+	return s.checkFlowAs(ctx, body, flowID, workspace, false)
+}
+
+// checkFlowLive is checkFlow against the integrations live calls use: for
+// submitting, approving and publishing.
+func (s *Server) checkFlowLive(ctx context.Context, body []byte, flowID, workspace string) (any, []string, error) {
+	return s.checkFlowAs(ctx, body, flowID, workspace, true)
+}
+
+func (s *Server) checkFlowAs(ctx context.Context, body []byte, flowID, workspace string, live bool) (any, []string, error) {
 	decoded, problems, err := checkSpec(body, flowID)
 	if err != nil {
 		return nil, nil, err
@@ -104,7 +115,7 @@ func (s *Server) checkFlow(ctx context.Context, body []byte, flowID, workspace s
 		if err != nil {
 			return nil, nil, err
 		}
-		problems = append(problems, integrationProblems(list, f, workspace)...)
+		problems = append(problems, integrationProblems(list, f, workspace, live)...)
 	}
 	return decoded, problems, nil
 }
