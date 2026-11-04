@@ -225,12 +225,12 @@ services:
     logging: *logging
 
   emi-helpdesk:
+    build: ../examples/emi-mcp # the same image as emi-core (built once, cached)
     image: voice-local/emi-mcp
     environment:
       EMI_MCP_ROLE: helpdesk
       EMI_MCP_TOKEN: ${EMI_HELPDESK_TOKEN}
     ports: ["127.0.0.1:8902:8000"]
-    depends_on: [emi-core] # built by emi-core
     logging: *logging
 
   # ── First-time setup ──
