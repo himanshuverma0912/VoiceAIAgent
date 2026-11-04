@@ -28,12 +28,14 @@ package api
 
 import (
 	"context"
+	"crypto/ecdh"
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -62,9 +64,15 @@ type Server struct {
 	Users        *auth.Verifier   // nil: only ADMIN_TOKEN is accepted on /v1
 	LiveKit      livekit.Config   // for browser test calls; empty: switched off
 	Builder      *builder.Builder // turns a written description into a flow; nil: switched off
+	// Seals integration tokens for the voice agent (INTEGRATION_SECRETS_PUBLIC_KEY);
+	// nil: tokens can't be saved, only the agent's variables (platform admins).
+	SecretsKey *ecdh.PublicKey
+	Hosts      HostPolicy // where workspace integrations may point
 
-	tests  rateLimiter
-	builds buildJobs
+	tests     rateLimiter
+	discovers rateLimiter
+	testDial  func(ctx context.Context, network, addr string) (net.Conn, error) // tests: see outboundClient
+	builds    buildJobs
 }
 
 func (s *Server) Handler() http.Handler {
@@ -107,8 +115,13 @@ func (s *Server) Handler() http.Handler {
 	v1("POST /v1/flows/{flow_id}/reviews/{review_id}/withdraw", s.withdrawReview)
 	v1("GET /v1/reviews", s.pendingReviews)
 	v1("GET /v1/integrations", s.listIntegrations)
+	v1("POST /v1/integrations/discover", s.discoverTools)
 	v1("PUT /v1/integrations/{integration_id}", s.putIntegration)
 	v1("DELETE /v1/integrations/{integration_id}", s.deleteIntegration)
+	v1("POST /v1/integrations/{integration_id}/approve", s.approveIntegration)
+	v1("POST /v1/integrations/{integration_id}/reject", s.rejectIntegration)
+	v1("POST /v1/integrations/{integration_id}/withdraw", s.withdrawIntegration)
+	v1("POST /v1/integrations/{integration_id}/enabled", s.setIntegrationEnabled)
 	v1("POST /v1/builds", s.startBuild)
 	v1("GET /v1/builds/{build_id}", s.getBuild)
 	v1("GET /v1/catalog", s.listCatalog)
@@ -309,7 +322,7 @@ func (s *Server) fail(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusNotFound, err.Error())
 	case errors.Is(err, store.ErrNoDraft), errors.Is(err, store.ErrNotPublished), errors.Is(err, store.ErrConflict),
 		errors.Is(err, store.ErrLastOwner), errors.Is(err, store.ErrWorkspaceNotEmpty),
-		errors.Is(err, store.ErrUnchangedDraft), errors.Is(err, store.ErrNotPending):
+		errors.Is(err, store.ErrUnchangedDraft), errors.Is(err, store.ErrNotPending), errors.Is(err, store.ErrNothingPending):
 		writeError(w, http.StatusConflict, err.Error())
 	case errors.Is(err, store.ErrSelfApproval), errors.Is(err, store.ErrNotSubmitter), errors.Is(err, store.ErrOwnRejection):
 		writeError(w, http.StatusForbidden, err.Error())
@@ -581,7 +594,7 @@ func (s *Server) publish(w http.ResponseWriter, r *http.Request) {
 	}
 	id := f.FlowID
 	v, unchanged, err := s.Store.Publish(r.Context(), id, actor(r), func(spec []byte) []string {
-		_, problems, err := s.checkFlow(r.Context(), spec, id, f.Workspace)
+		_, problems, err := s.checkFlowLive(r.Context(), spec, id, f.Workspace)
 		if err != nil {
 			return []string{"(top level): not valid JSON: " + err.Error()}
 		}

@@ -19,6 +19,11 @@ export function ToolLabel({ t }: { t: OfferedTool | undefined }) {
           needs a verified caller
         </span>
       )}
+      {t.pending && (
+        <span className="chip" title="Test calls can use it now; the flow can be submitted once a checker approves the integration">
+          waiting for approval
+        </span>
+      )}
     </span>
   );
 }
@@ -41,6 +46,7 @@ export function ToolSelect(props: {
         <option key={t.ref} value={t.ref}>
           {t.tool.name} · {t.integration.label}
           {t.tool.sensitive ? " (verified callers)" : ""}
+          {t.pending ? " · waiting for approval" : ""}
         </option>
       ))}
     </select>

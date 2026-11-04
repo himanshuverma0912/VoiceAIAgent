@@ -44,10 +44,12 @@ func readNote(w http.ResponseWriter, r *http.Request, required bool) (string, bo
 	return b.Note, true
 }
 
-// validator re-checks a flow (shape, rules, model catalog) for a workspace.
+// validator re-checks a flow (shape, rules, model catalog) for a workspace,
+// against the integrations as live calls use them: a flow can't be submitted
+// or approved while it needs an integration change that isn't approved yet.
 func (s *Server) validator(r *http.Request, flowID, workspace string) func([]byte) []string {
 	return func(spec []byte) []string {
-		_, problems, err := s.checkFlow(r.Context(), spec, flowID, workspace)
+		_, problems, err := s.checkFlowLive(r.Context(), spec, flowID, workspace)
 		if err != nil {
 			return []string{"(top level): not valid JSON: " + err.Error()}
 		}

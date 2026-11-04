@@ -691,3 +691,17 @@ button.corner { position: absolute; top: 16px; right: 16px; }
   *, *::before, *::after { transition: none !important; }
   .dot { animation: none !important; }
 }
+
+/* ── Integrations: adding an MCP server, reviewing a change ── */
+.auth-box { border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 14px 12px; margin: 4px 0 10px; }
+.auth-box legend { font-size: 12.5px; color: var(--muted); padding: 0 6px; }
+.tool-pick { display: grid; gap: 8px; max-height: 360px; overflow: auto; padding-right: 4px; }
+.tool-row { border: 1px solid var(--line); border-radius: var(--radius); padding: 8px 12px; background: var(--sunk); }
+.tool-row.off { opacity: 0.6; }
+.tool-row > .check { font-family: var(--mono); font-size: 13px; margin-bottom: 2px; }
+.tool-rules { margin-top: 6px; display: grid; gap: 4px; }
+.tool-rules .small-text { margin: 0; }
+.check.inline { display: inline-flex; margin: 0 10px 0 0; }
+.change-list { margin: 6px 0 12px; padding-left: 20px; font-size: 13.5px; }
+.change-list li { margin: 3px 0; }
+.change-list li.risk { color: var(--warn); font-weight: 500; }

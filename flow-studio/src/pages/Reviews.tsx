@@ -1,10 +1,11 @@
 // Reviews: changes makers have submitted that are waiting for a checker.
 import { useEffect, useState } from "react";
-import { api, can, type FlowSummary, type Me, type Review } from "../api";
+import { api, can, integrationForMe, type FlowSummary, type Integration, type Me, type Review } from "../api";
 import { ReviewDialog } from "../components/Review";
 import { PageHero, timeAgo, toast } from "../components/ui";
-import { Link, usePath } from "../router";
+import { Link, navigate, usePath } from "../router";
 import { workspaceNames } from "./FlowList";
+import { IntegrationReview } from "./Integrations";
 
 const CHANGED = "flow-studio.reviews-changed";
 
@@ -20,8 +21,8 @@ export function useReviewCount(me: Me): number {
     if (!checksSomewhere) return;
     let live = true;
     const load = () =>
-      api.pendingReviews().then(
-        (rs) => live && setCount(rs.filter((r) => r.for_me).length),
+      Promise.all([api.pendingReviews(), api.integrations().catch(() => [] as Integration[])]).then(
+        ([rs, is]) => live && setCount(rs.filter((r) => r.for_me).length + is.filter((i) => integrationForMe(me, i)).length),
         () => {},
       );
     load();
@@ -32,7 +33,7 @@ export function useReviewCount(me: Me): number {
       clearInterval(timer);
       window.removeEventListener(CHANGED, load);
     };
-  }, [checksSomewhere, path]);
+  }, [checksSomewhere, path, me]);
   return count;
 }
 
@@ -40,9 +41,14 @@ export function Reviews({ me }: { me: Me }) {
   const [reviews, setReviews] = useState<Review[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [open, setOpen] = useState<{ review: Review; flow: FlowSummary } | null>(null);
+  const [integrations, setIntegrations] = useState<Integration[]>([]);
+  const [reviewing, setReviewing] = useState<Integration | null>(null);
   const names = workspaceNames(me);
 
-  const load = () => api.pendingReviews().then(setReviews, (e) => setError((e as Error).message));
+  const load = () => {
+    api.pendingReviews().then(setReviews, (e) => setError((e as Error).message));
+    api.integrations().then((is) => setIntegrations(is.filter((i) => i.pending)), () => {});
+  };
   useEffect(() => {
     load();
   }, []);
@@ -57,6 +63,40 @@ export function Reviews({ me }: { me: Me }) {
 
   const mine = reviews?.filter((r) => r.for_me) ?? [];
   const others = reviews?.filter((r) => !r.for_me) ?? [];
+  const integrationsForMe = integrations.filter((i) => integrationForMe(me, i));
+  const otherIntegrations = integrations.filter((i) => !integrationForMe(me, i));
+
+  const integrationList = (rows: Integration[]) => (
+    <div className="flow-list">
+      {rows.map((i) => (
+        <button
+          key={i.integration_id}
+          className="flow-item"
+          style={{ textAlign: "left", font: "inherit" }}
+          onClick={() => (integrationForMe(me, i) ? setReviewing(i) : navigate("/integrations"))}
+        >
+          <div>
+            <strong>{i.pending?.label ?? i.label}</strong>
+            <div className="meta">
+              <span>{names[i.owner_workspace ?? ""] ?? i.owner_workspace ?? "platform"}</span>
+              <span>
+                {i.pending_by === me.email ? "you" : i.pending_by} · {timeAgo(i.pending_at)}
+              </span>
+            </div>
+            {i.pending_note && (
+              <div className="muted" style={{ fontSize: 13, marginTop: 4 }}>
+                “{i.pending_note.length > 160 ? i.pending_note.slice(0, 160) + "…" : i.pending_note}”
+              </div>
+            )}
+          </div>
+          <div className="meta" style={{ justifyContent: "flex-end" }}>
+            <span className="chip">{i.live ? "integration change" : "new integration"}</span>
+            {integrationForMe(me, i) ? <span className="chip warn">yours to decide</span> : i.pending_by === me.email ? <span className="chip">yours</span> : null}
+          </div>
+        </button>
+      ))}
+    </div>
+  );
 
   const list = (rows: Review[]) => (
     <div className="flow-list">
@@ -92,7 +132,7 @@ export function Reviews({ me }: { me: Me }) {
       </PageHero>
       {error && <div className="notice bad" style={{ marginTop: 16 }}>{error}</div>}
       {!reviews && !error && <p className="muted">Loading…</p>}
-      {reviews && reviews.length === 0 && (
+      {reviews && reviews.length === 0 && integrations.length === 0 && (
         <div className="card" style={{ marginTop: 18 }}>
           <p style={{ margin: 0 }}>Nothing is waiting for review in your workspaces.</p>
         </div>
@@ -106,6 +146,15 @@ export function Reviews({ me }: { me: Me }) {
           {list(mine)}
         </section>
       )}
+      {integrationsForMe.length > 0 && (
+        <section className="ws-group">
+          <div className="ws-group-head">
+            <h2>Integrations waiting for you</h2>
+            <span className="muted">{integrationsForMe.length}</span>
+          </div>
+          {integrationList(integrationsForMe)}
+        </section>
+      )}
       {others.length > 0 && (
         <section className="ws-group">
           <div className="ws-group-head">
@@ -114,6 +163,28 @@ export function Reviews({ me }: { me: Me }) {
           </div>
           {list(others)}
         </section>
+      )}
+      {otherIntegrations.length > 0 && (
+        <section className="ws-group">
+          <div className="ws-group-head">
+            <h2>Integrations waiting for a checker</h2>
+            <span className="muted">{otherIntegrations.length}</span>
+          </div>
+          {integrationList(otherIntegrations)}
+        </section>
+      )}
+      {reviewing && (
+        <IntegrationReview
+          me={me}
+          integration={reviewing}
+          onClose={() => setReviewing(null)}
+          onDecided={(message) => {
+            setReviewing(null);
+            toast(message);
+            reviewsChanged();
+            load();
+          }}
+        />
       )}
       {open && (
         <ReviewDialog
