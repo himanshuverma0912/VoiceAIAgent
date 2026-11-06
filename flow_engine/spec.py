@@ -63,6 +63,13 @@ says (see listeners.py), on every step or only the steps listed in "steps":
   promise_to_pay  a small AI check after each thing the caller says: a promise
                   to pay is kept as {{promised_date}} and {{promised_amount}}
                   (or the names in save_date / save_amount)
+  time_limit      the whole call: "warn_minutes" before "minutes" the agent
+                  says time is nearly up; at "minutes" it ends the call, or
+                  goes to a step ("to") and ends a few minutes later
+  off_topic       a small AI check after each thing the caller says: after
+                  "steer_after" off-topic turns in a row the agent brings them
+                  back; after "then_after" it ends the call, goes to a step or
+                  flags the call ("then")
 
 Variables
 ---------
@@ -112,7 +119,7 @@ REPLY_CHECKS = ("mask_long_numbers", "amounts_from_tools", "no_promises")
 ReplyCheckName = Literal["mask_long_numbers", "amounts_from_tools", "no_promises"]
 
 # Side listeners (listeners.py). The config service keeps the same lists.
-LISTENER_KINDS = ("secret_guard", "keyword_watch", "promise_to_pay")
+LISTENER_KINDS = ("secret_guard", "keyword_watch", "promise_to_pay", "time_limit", "off_topic")
 LISTENER_ACTIONS = ("go_to", "say", "flag", "end_call")
 MAX_LISTENER_WORDS = 50
 MAX_LISTENER_WORD_LENGTH = 80
@@ -310,7 +317,32 @@ class PromiseToPay(_Strict):
     save_amount: Identifier = Field(default="promised_amount", description="Variable for the amount (if they said one)")
 
 
-Listener = Annotated[Union[SecretGuard, KeywordWatch, PromiseToPay], Field(discriminator="kind")]
+class TimeLimit(_Strict):
+    kind: Literal["time_limit"]
+    name: Identifier = Field(description="Shown in test calls and call history, e.g. 'time_limit'")
+    minutes: int = Field(default=30, ge=1, le=240, description="The longest a call may last")
+    warn_minutes: int = Field(default=2, ge=0, le=60, description="Tell the caller this long before the end (0: don't)")
+    warn_say: str = Field(default="", description="What to tell them (empty: the agent says it in its own words)")
+    then: Literal["end_call", "go_to"] = Field(default="end_call", description="At the limit: end the call, or go to a step")
+    to: Identifier | None = Field(default=None, description="then 'go_to': the step (the call still ends a few minutes later)")
+    say: str = Field(default="", description="Said at the limit (empty: a default in the flow's language)")
+
+
+class OffTopic(_Strict):
+    kind: Literal["off_topic"]
+    name: Identifier = Field(description="Shown in test calls and call history, e.g. 'off_topic'")
+    steps: list[Identifier] = Field(default_factory=list, description="Steps it listens on (empty: every step)")
+    topic: str = Field(default="", description="What the call is about (empty: the flow's name, persona and current step)")
+    steer_after: int = Field(default=2, ge=1, le=10, description="Off-topic turns in a row before the agent brings them back")
+    then_after: int = Field(default=4, ge=0, le=20, description="Off-topic turns in a row before 'then' (0: never)")
+    then: Literal["end_call", "go_to", "flag"] = Field(default="end_call", description="What to do after then_after")
+    to: Identifier | None = Field(default=None, description="then 'go_to': the step to go to")
+    say: str = Field(default="", description="A line to say first (end_call: empty uses a default)")
+
+
+Listener = Annotated[
+    Union[SecretGuard, KeywordWatch, PromiseToPay, TimeLimit, OffTopic], Field(discriminator="kind")
+]
 
 
 class ResumeSettings(_Strict):
@@ -389,6 +421,8 @@ def _texts(flow: Flow) -> list[tuple[str, str]]:
     if flow.settings.reply_check_line:
         out.append(("settings.reply_check_line", flow.settings.reply_check_line))
     for i, ls in enumerate(flow.settings.listeners):
+        if isinstance(ls, TimeLimit) and ls.warn_say:
+            out.append((f"settings.listeners[{i}].warn_say", ls.warn_say))
         if not isinstance(ls, PromiseToPay) and ls.say:
             out.append((f"settings.listeners[{i}].say", ls.say))
     out += _tool_input_texts("tools", flow.tools)
@@ -615,11 +649,11 @@ def _listener_problems(flow: Flow, ids: set[str]) -> list[str]:
         if ls.name in names:
             problems.append(f"{loc}.name: another listener is already called '{ls.name}'")
         names.add(ls.name)
-        if ls.kind in ("secret_guard", "promise_to_pay") and ls.kind in kinds:
-            problems.append(f"{loc}: the flow already has a {ls.kind} listener; one is enough")
+        if ls.kind in ("secret_guard", "promise_to_pay", "time_limit", "off_topic") and ls.kind in kinds:
+            problems.append(f"{loc}: the flow already has a '{ls.kind}' listener; one is enough")
         kinds.add(ls.kind)
         listed: set[str] = set()
-        for j, step in enumerate(ls.steps):
+        for j, step in enumerate(getattr(ls, "steps", [])):
             if step not in ids:
                 problems.append(f"{loc}.steps[{j}]: '{step}' is not a node")
             elif step in listed:
@@ -651,6 +685,20 @@ def _listener_problems(flow: Flow, ids: set[str]) -> list[str]:
                 problems.append(f"{loc}.say: not used when 'then' is 'flag'")
         if isinstance(ls, PromiseToPay) and ls.save_date == ls.save_amount:
             problems.append(f"{loc}.save_amount: must differ from save_date")
+        if isinstance(ls, (TimeLimit, OffTopic)):
+            if isinstance(ls, TimeLimit) and ls.warn_minutes >= ls.minutes:
+                problems.append(f"{loc}.warn_minutes: must be less than minutes")
+            if isinstance(ls, OffTopic) and ls.then_after and ls.then_after <= ls.steer_after:
+                problems.append(f"{loc}.then_after: must be more than steer_after (or 0: never)")
+            if ls.then == "go_to":
+                if ls.to is None:
+                    problems.append(f"{loc}.to: say which step to go to")
+                elif ls.to not in ids:
+                    problems.append(f"{loc}.to: '{ls.to}' is not a node")
+            elif ls.to is not None:
+                problems.append(f"{loc}.to: only used when 'then' is 'go_to'")
+            if isinstance(ls, OffTopic) and ls.then == "flag" and ls.say:
+                problems.append(f"{loc}.say: not used when 'then' is 'flag'")
     return problems
 
 
@@ -792,7 +840,8 @@ def _format_pydantic_error(err: dict) -> str:
             loc += ".builtin"
             msg = f"unknown built-in '{tag[len('builtin:'):]}'; use one of {', '.join(BUILTIN_FIELDS)}"
         elif loc.startswith("settings.listeners["):
-            msg = f"unknown listener kind '{tag}'; use 'secret_guard', 'keyword_watch' or 'promise_to_pay'"
+            kinds = ", ".join(f"'{k}'" for k in LISTENER_KINDS[:-1])
+            msg = f"unknown listener kind '{tag}'; use {kinds} or '{LISTENER_KINDS[-1]}'"
         else:
             msg = f"unknown node type '{tag}'; use 'agent', 'collect', 'api' or 'end'"
     return f"{loc or '(top level)'}: {msg}"

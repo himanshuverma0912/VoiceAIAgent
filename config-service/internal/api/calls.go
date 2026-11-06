@@ -293,8 +293,10 @@ type checkStats struct {
 }
 
 // What a listener did on a call: a secret guard "warned"; a keyword watch
-// "go_to", "say", "flag" or "end_call"; a promise to pay "saved".
-var listenerActions = []string{"warned", "go_to", "say", "flag", "end_call", "saved"}
+// "go_to", "say", "flag" or "end_call"; a promise to pay "saved"; a time limit
+// "time_warning", then "end_call" or "go_to"; an off-topic guard "steered",
+// then "end_call", "go_to" or "flag".
+var listenerActions = []string{"warned", "go_to", "say", "flag", "end_call", "saved", "time_warning", "steered"}
 
 // listenerStats: how often a side listener acted, and what it did.
 type listenerStats struct {

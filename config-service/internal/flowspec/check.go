@@ -98,6 +98,9 @@ func texts(f *Flow) []located {
 		out = append(out, located{"settings.reply_check_line", f.ReplyCheckLine})
 	}
 	for i, l := range f.Listeners {
+		if l.Kind == "time_limit" && l.WarnSay != "" {
+			out = append(out, located{fmt.Sprintf("settings.listeners[%d].warn_say", i), l.WarnSay})
+		}
 		if l.Kind != "promise_to_pay" && l.Say != "" {
 			out = append(out, located{fmt.Sprintf("settings.listeners[%d].say", i), l.Say})
 		}
@@ -241,8 +244,8 @@ func listenerProblems(f *Flow, isNode func(string) bool) []string {
 			add("%s.name: another listener is already called '%s'", loc, l.Name)
 		}
 		names[l.Name] = true
-		if (l.Kind == "secret_guard" || l.Kind == "promise_to_pay") && kinds[l.Kind] {
-			add("%s: the flow already has a %s listener; one is enough", loc, l.Kind)
+		if l.Kind != "keyword_watch" && kinds[l.Kind] {
+			add("%s: the flow already has a '%s' listener; one is enough", loc, l.Kind)
 		}
 		kinds[l.Kind] = true
 		listed := map[string]bool{}
@@ -292,6 +295,26 @@ func listenerProblems(f *Flow, isNode func(string) bool) []string {
 		case "promise_to_pay":
 			if l.SaveDate == l.SaveAmount {
 				add("%s.save_amount: must differ from save_date", loc)
+			}
+		case "time_limit", "off_topic":
+			if l.Kind == "time_limit" && l.WarnMinutes >= l.Minutes {
+				add("%s.warn_minutes: must be less than minutes", loc)
+			}
+			if l.Kind == "off_topic" && l.ThenAfter != 0 && l.ThenAfter <= l.SteerAfter {
+				add("%s.then_after: must be more than steer_after (or 0: never)", loc)
+			}
+			if l.Then == "go_to" {
+				switch {
+				case !l.HasTo:
+					add("%s.to: say which step to go to", loc)
+				case !isNode(l.To):
+					add("%s.to: '%s' is not a node", loc, l.To)
+				}
+			} else if l.HasTo {
+				add("%s.to: only used when 'then' is 'go_to'", loc)
+			}
+			if l.Kind == "off_topic" && l.Then == "flag" && l.Say != "" {
+				add("%s.say: not used when 'then' is 'flag'", loc)
 			}
 		}
 	}

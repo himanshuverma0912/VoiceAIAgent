@@ -111,7 +111,29 @@ export type Listener =
       say?: string;
       once?: boolean;
     }
-  | { kind: "promise_to_pay"; name: string; steps?: string[]; save_date?: string; save_amount?: string };
+  | { kind: "promise_to_pay"; name: string; steps?: string[]; save_date?: string; save_amount?: string }
+  | {
+      kind: "time_limit";
+      name: string;
+      steps?: undefined; // the whole call
+      minutes?: number; // default 30
+      warn_minutes?: number; // default 2; 0: no warning
+      warn_say?: string;
+      then?: "end_call" | "go_to";
+      to?: string | null;
+      say?: string;
+    }
+  | {
+      kind: "off_topic";
+      name: string;
+      steps?: string[];
+      topic?: string;
+      steer_after?: number; // default 2
+      then_after?: number; // default 4; 0: never
+      then?: "end_call" | "go_to" | "flag";
+      to?: string | null;
+      say?: string;
+    };
 export type ListenerKind = Listener["kind"];
 export type ListenerAction = "go_to" | "say" | "flag" | "end_call";
 
@@ -155,12 +177,29 @@ export const LISTENER_PRESETS: { id: string; label: string; about: string; make:
     about: "A small AI check after each thing the caller says: a promise to pay is kept as {{promised_date}} and {{promised_amount}}.",
     make: () => ({ kind: "promise_to_pay", name: "promise_to_pay" }),
   },
+  {
+    id: "time_limit",
+    label: "Call time limit",
+    about: "The longest a call may last: the agent says when time is nearly up, then ends the call politely (or moves to a step you choose).",
+    make: () => ({ kind: "time_limit", name: "time_limit", minutes: 30, warn_minutes: 2 }),
+  },
+  {
+    id: "off_topic",
+    label: "Off-topic guard",
+    about: "A small AI check after each thing the caller says: a caller who keeps going off topic is brought back; if it goes on, the call ends (or moves to a step, or is flagged).",
+    make: () => ({ kind: "off_topic", name: "off_topic", steer_after: 2, then_after: 4, then: "end_call" }),
+  },
 ];
+
+/** Kinds a flow can have only one of. */
+export const ONE_PER_FLOW: ListenerKind[] = ["secret_guard", "promise_to_pay", "time_limit", "off_topic"];
 
 export const LISTENER_KIND_LABEL: Record<ListenerKind, string> = {
   secret_guard: "Secret guard",
   keyword_watch: "Keyword watch",
   promise_to_pay: "Promise to pay",
+  time_limit: "Call time limit",
+  off_topic: "Off-topic guard",
 };
 
 /** What a listener did, as call history and test calls show it. */
@@ -171,6 +210,8 @@ export const LISTENER_ACTION_TEXT: Record<string, string> = {
   flag: "flagged the call",
   end_call: "ended the call",
   saved: "kept a promise to pay",
+  time_warning: "told the caller time is nearly up",
+  steered: "brought the caller back to the topic",
 };
 
 /** Checks on every sentence before the caller hears it (flow_engine/reply_checks.py). */
@@ -369,6 +410,102 @@ export function edgesOf(flow: Flow): Edge[] {
   return edges;
 }
 
+const VAR_RE = /\{\{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\}\}/g;
+
+/** The {{variables}} a text uses. */
+function varsIn(text: string): string[] {
+  return [...text.matchAll(VAR_RE)].map((m) => m[1]);
+}
+
+/**
+ * The values every route into each step has already collected (built-ins
+ * left out). A value counts only if it's collected on every way in: a
+ * collect step's fields on its way out, an API step's saved values when it
+ * works (not on its error path), an agent transition's captured values on
+ * that transition. Steps no route reaches get null.
+ */
+export function collectedBefore(flow: Flow): Record<string, Set<string> | null> {
+  const ids = Object.keys(flow.nodes);
+  const gained = (e: Edge): string[] => {
+    const node = flow.nodes[e.from];
+    if (node.type === "agent" && e.transition !== undefined) return Object.keys(node.transitions?.[e.transition]?.capture ?? {});
+    if (node.type === "collect") return (node.fields ?? []).map((f) => f.name);
+    if (node.type === "api" && e.kind === "ok") return node.save ?? [];
+    return [];
+  };
+  const edges = edgesOf(flow).filter((e) => e.to in flow.nodes);
+  // "Unknown" (null) starts as everything; the start step starts with nothing.
+  const known: Record<string, Set<string> | null> = Object.fromEntries(ids.map((id) => [id, null]));
+  if (!(flow.start_node in flow.nodes)) return known;
+  known[flow.start_node] = new Set();
+  for (let changed = true, rounds = 0; changed && rounds < 100; rounds++) {
+    changed = false;
+    for (const id of ids) {
+      if (id === flow.start_node) continue;
+      let found: string[] | null = null;
+      for (const e of edges) {
+        const from = known[e.from];
+        if (e.to !== id || from === null) continue;
+        const via = new Set<string>([...from, ...gained(e)]);
+        found = found === null ? [...via] : found.filter((v) => via.has(v));
+      }
+      if (found === null) continue;
+      const before = known[id];
+      if (before === null || before.size !== found.length || found.some((v) => !before.has(v))) {
+        known[id] = new Set(found);
+        changed = true;
+      }
+    }
+  }
+  return known;
+}
+
+/** A side listener that jumps to a step that needs values the caller may not have given yet. */
+export interface JumpWarning {
+  listener: number; // index in settings.listeners
+  name: string;
+  to: string;
+  missing: string[]; // the values that may not be collected yet
+  steps: string[]; // the listening steps where they may be missing
+  text: string;
+}
+
+/** Listeners that go to an API step, or a step whose tools need values, from a
+ * step where those values may not be collected yet (a time limit listens on every step). */
+export function listenerJumpWarnings(flow: Flow): JumpWarning[] {
+  const out: JumpWarning[] = [];
+  const builtins = new Set(BUILTIN_VARIABLES.map((v) => v.name));
+  let known: ReturnType<typeof collectedBefore> | undefined;
+  (flow.settings?.listeners ?? []).forEach((ls, i) => {
+    if (!("then" in ls) || ls.then !== "go_to" || !ls.to) return;
+    const target = flow.nodes[ls.to];
+    if (!target || (target.type !== "api" && target.type !== "agent")) return;
+    const inputs = target.type === "api" ? [target.inputs ?? {}] : (target.tools ?? []).map((t) => t.inputs ?? {});
+    const needed = [...new Set(inputs.flatMap((ins) => Object.values(ins).flatMap(varsIn)))].filter((v) => !builtins.has(v));
+    if (!needed.length) return;
+    known ??= collectedBefore(flow);
+    const listening = (ls.steps?.length ? ls.steps : Object.keys(flow.nodes)).filter((id) => id !== ls.to && known![id] != null);
+    const missing = new Set<string>();
+    const steps: string[] = [];
+    for (const id of listening) {
+      const lacking = needed.filter((v) => !known![id]!.has(v));
+      if (lacking.length) {
+        steps.push(id);
+        lacking.forEach((v) => missing.add(v));
+      }
+    }
+    if (!steps.length) return;
+    const vars = [...missing].map((v) => `{{${v}}}`).join(", ");
+    const where = steps.length > 4 ? `${steps.slice(0, 3).join(", ")} and ${steps.length - 3} more steps` : steps.join(", ");
+    const text =
+      target.type === "api"
+        ? `${ls.name} goes to ${ls.to}, which calls ${target.tool || "a tool"} with ${vars}. On ${where} ${missing.size === 1 ? "that value" : "those values"} may not be collected yet, so the call would fail${target.on_error ? ` and go to ${target.on_error}` : ""}. Go to a conversation step that collects ${missing.size === 1 ? "it" : "them"} first, or listen only on later steps.`
+        : `${ls.name} goes to ${ls.to}, whose tools need ${vars}. On ${where} ${missing.size === 1 ? "that value" : "those values"} may not be collected yet, so those tools can't run there. Listen only on later steps, or go to a step that collects ${missing.size === 1 ? "it" : "them"} first.`;
+    out.push({ listener: i, name: ls.name, to: ls.to, missing: [...missing], steps, text });
+  });
+  return out;
+}
+
 /** Rename a node, keeping its place in the file and fixing every reference. */
 export function renameNode(flow: Flow, oldId: string, newId: string): Flow {
   const nodes: Record<string, FlowNode> = {};
@@ -384,11 +521,14 @@ export function renameNode(flow: Flow, oldId: string, newId: string): Flow {
   const settings = flow.settings?.listeners
     ? {
         ...flow.settings,
-        listeners: flow.settings.listeners.map((ls) => ({
-          ...ls,
-          ...(ls.steps ? { steps: ls.steps.map((s) => (s === oldId ? newId : s)) } : {}),
-          ...(ls.kind === "keyword_watch" && ls.to === oldId ? { to: newId } : {}),
-        })),
+        listeners: flow.settings.listeners.map(
+          (ls) =>
+            ({
+              ...ls,
+              ...(ls.steps ? { steps: ls.steps.map((s) => (s === oldId ? newId : s)) } : {}),
+              ...("to" in ls && ls.to === oldId ? { to: newId } : {}),
+            }) as Listener,
+        ),
       }
     : flow.settings;
   return { ...flow, nodes, settings, start_node: flow.start_node === oldId ? newId : flow.start_node };

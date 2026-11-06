@@ -283,14 +283,20 @@ history) and optional `steps` (empty: every step):
 |---|---|
 | `secret_guard` | The caller starts reading out an OTP, PIN, CVV, password or a full card or account number: the agent warns them at once (`say`, or a default in the flow's language), and that turn never reaches the AI or the conversation history. "PIN code" (a postal code) and ordinary numbers aren't secrets. |
 | `keyword_watch` | One of `words` is said: `then` `go_to` a step (`to`; the step hears what was said), `say` a line, `flag` the call (the agent answers as usual), or `end_call` (after `say`, or a goodbye). `once` (default true): only the first time in a call. |
+| `time_limit` | The whole call (no `steps`): `warn_minutes` (default 2; 0: no warning) before `minutes` (default 30) the agent tells the caller time is nearly up (`warn_say`, or in its own words); at `minutes` it says `say` (or a default) and ends the call, or with `then` `go_to` moves to a step (`to`) and ends the call 3 minutes later. |
+| `off_topic` | After each thing the caller says on its steps, a small AI check asks whether it was about the call (`topic`, or the flow's name, persona and current step). After `steer_after` off-topic turns in a row (default 2) the agent politely brings them back; after `then_after` (default 4; 0: never) it does `then`: `end_call` (after `say`, or a default), `go_to` a step, or `flag`. Replies of one or two words count as on topic, without a check. |
 | `promise_to_pay` | After each thing the caller says on its steps, a small AI check (the flow's model, or `LISTENER_LLM_MODEL` on the agent) asks whether it was a promise to pay; a promise is kept as `{{promised_date}}` and `{{promised_amount}}` (or `save_date` / `save_amount`), which later steps see and resume can keep. The agent's reply doesn't wait for it. |
 
 The service refuses unknown kinds, two listeners with one name, a second
-`secret_guard` or `promise_to_pay`, steps or targets that aren't nodes, empty
-or repeated words, and a `say` the action doesn't use. Call history records
-which listener acted, on which step and what it did (`warned`, `go_to`, `say`,
-`flag`, `end_call`, `saved`); never what was said or what was kept (Flow
-Studio: Calls → Side listeners).
+listener of any kind but `keyword_watch`, steps or targets that aren't nodes,
+empty or repeated words, a warning that isn't before the limit, a `then_after`
+that isn't after `steer_after`, and a `say` the action doesn't use. Call
+history records which listener acted, on which step and what it did
+(`warned`, `go_to`, `say`, `flag`, `end_call`, `saved`, `time_warning`,
+`steered`); never what was said or what was kept (Flow Studio: Calls → Side
+listeners). Flow Studio also warns (without refusing) when a listener goes to
+a step that needs values the caller may not have given yet on the steps it
+listens on.
 
 Deploy this service before an agent with listeners: an older service refuses
 call records that list them, and flows that have them.

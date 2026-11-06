@@ -325,3 +325,92 @@ def test_call_record_counts_listeners_only_when_one_acted():
 
 def test_example_flow_still_loads():
     load_flow("flows/emi-payment-issue.json")
+
+
+# ── time limit and off topic ──────────────────────────────────────────────────
+
+
+class TopicJudge(Judge):
+    """Off topic when the caller talks about cricket."""
+
+    def __init__(self) -> None:
+        super().__init__({})
+
+    def chat(self, *, chat_ctx, tools=None, conn_options=DEFAULT_API_CONNECT_OPTIONS, **kwargs):
+        said = chat_ctx.items[-1].text_content or ""
+        self.answers = {said: {"off_topic": "cricket" in said.lower()}}
+        return super().chat(chat_ctx=chat_ctx, tools=tools, conn_options=conn_options)
+
+
+@pytest.fixture
+def fast_clock(monkeypatch):
+    monkeypatch.setattr(ls.Listeners, "SECONDS_PER_MINUTE", 0.05)
+    monkeypatch.setattr(ls.Listeners, "GRACE_MINUTES", 2)
+
+
+async def wait_for(check, timeout=5.0):
+    for _ in range(int(timeout / 0.02)):
+        if check():
+            return
+        await asyncio.sleep(0.02)
+    raise AssertionError("timed out")
+
+
+async def test_the_call_is_warned_then_ended_at_the_time_limit(fast_clock):
+    limit = {"kind": "time_limit", "name": "time_limit", "minutes": 4, "warn_minutes": 1}
+    async with Call(limit) as c:
+        await c.typed(DOB, DIGITS)
+        await wait_for(lambda: c.hung_up)
+        assert [r[2] for r in c.reports] == ["time_warning", "end_call"]
+        assert any(ls.TIME_WARNING.format(minutes=1, s="") in r["instructions"] for r in c.h.llm.requests)
+        assert ("assistant", ls.TIME_UP[1]) in c.history()  # the flow is in Hindi
+
+
+async def test_at_the_time_limit_the_call_can_move_to_a_step_first(fast_clock):
+    limit = {"kind": "time_limit", "name": "time_limit", "minutes": 3, "warn_minutes": 0, "then": "go_to", "to": "callback", "say": "Let me book you a call back."}
+    async with Call(limit) as c:
+        await c.typed(DOB, DIGITS)
+        await wait_for(lambda: c.h.state.path[-1] == "callback")
+        assert ("assistant", "Let me book you a call back.") in c.history()
+        assert not c.hung_up
+        await wait_for(lambda: c.hung_up)  # the grace minutes later
+        assert [r[2] for r in c.reports] == ["go_to", "end_call"]
+
+
+async def test_a_caller_who_keeps_going_off_topic_is_brought_back_then_the_call_ends():
+    guard = {"kind": "off_topic", "name": "off_topic", "steer_after": 2, "then_after": 3}
+    async with Call(guard, judge=TopicJudge()) as c:
+        await c.typed(DOB, DIGITS)
+        await c.spoken("did you watch the cricket match yesterday")
+        await c.spoken("my EMI bounced this month")  # on topic: the count starts again
+        await c.spoken("the cricket was amazing, what a final over")
+        assert c.reports == []
+        await c.spoken("cricket is the best sport in the world honestly")
+        assert c.reports == [("off_topic", "off_topic", "steered", "identify_issue")]
+        assert ls.STEER in c.h.llm.requests[-1]["instructions"]
+        await c.spoken("ok")  # short replies are part of the call, without a check
+        await c.spoken("let me tell you about cricket in my village")
+        await c.spoken("and more about cricket")  # "ok" started the count again: brought back again
+        assert not c.hung_up
+        await c.spoken("cricket again and again")
+        await wait_for(lambda: c.hung_up)
+        assert [r[2] for r in c.reports] == ["steered", "steered", "end_call"]
+        assert ("assistant", ls.OFF_TOPIC_END[1]) in c.history()
+
+
+def test_time_limit_and_off_topic_mistakes_are_reported():
+    with pytest.raises(FlowError) as e:
+        parse_flow(
+            emi_flow(
+                {"kind": "time_limit", "name": "t", "minutes": 5, "warn_minutes": 5, "to": "closing"},
+                {"kind": "time_limit", "name": "t2"},
+                {"kind": "off_topic", "name": "o", "steer_after": 3, "then_after": 2, "then": "go_to"},
+            )
+        )
+    assert e.value.problems == [
+        "settings.listeners[0].warn_minutes: must be less than minutes",
+        "settings.listeners[0].to: only used when 'then' is 'go_to'",
+        "settings.listeners[1]: the flow already has a 'time_limit' listener; one is enough",
+        "settings.listeners[2].then_after: must be more than steer_after (or 0: never)",
+        "settings.listeners[2].to: say which step to go to",
+    ]

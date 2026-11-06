@@ -91,7 +91,7 @@ export function NodeEditor(p: Props) {
 function StepListeners(props: { flow: Flow; id: string }) {
   const all = props.flow.settings?.listeners ?? [];
   const here = all.filter((ls) => !ls.steps?.length || ls.steps.includes(props.id));
-  const jumpIn = all.filter((ls) => ls.kind === "keyword_watch" && ls.then === "go_to" && ls.to === props.id);
+  const jumpIn = all.filter((ls) => "then" in ls && ls.then === "go_to" && ls.to === props.id);
   if (!here.length && !jumpIn.length) return null;
   return (
     <div className="section">
@@ -103,7 +103,7 @@ function StepListeners(props: { flow: Flow; id: string }) {
             <span key={ls.name}>
               {i > 0 && ", "}
               <strong>{ls.name}</strong> ({LISTENER_KIND_LABEL[ls.kind]}
-              {ls.steps?.length ? "" : ", every step"})
+              {ls.steps?.length ? "" : ls.kind === "time_limit" ? ", the whole call" : ", every step"})
             </span>
           ))}
           .

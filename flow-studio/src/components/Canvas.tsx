@@ -107,7 +107,7 @@ export function Canvas(props: {
   // Steps a keyword watch can jump to, with the listeners that can.
   const jumps = useMemo(() => {
     const out: Record<string, string[]> = {};
-    for (const ls of flow.settings?.listeners ?? []) if (ls.kind === "keyword_watch" && ls.then === "go_to" && ls.to) (out[ls.to] ??= []).push(ls.name);
+    for (const ls of flow.settings?.listeners ?? []) if ("then" in ls && ls.then === "go_to" && ls.to) (out[ls.to] ??= []).push(ls.name);
     return out;
   }, [flow]);
 

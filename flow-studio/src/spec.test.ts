@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import { changesBetween, readablePath } from "./diff";
 import { autoLayout, positionsFor } from "./layout";
 import {
-  clone, deleteNode, edgesOf, groupProblems, isEditable, newFlowTemplate, renameNode, serialize, uniqueId, variablesOf,
+  clone, collectedBefore, deleteNode, edgesOf, groupProblems, isEditable, listenerJumpWarnings, newFlowTemplate, renameNode, serialize,
+  uniqueId, variablesOf,
   type Flow,
 } from "./spec";
 
@@ -152,6 +153,93 @@ describe("side listeners", () => {
       path: "settings.listeners.fraud_watch",
       kind: "removed",
       before: "Keyword watch fraud_watch on every step: “fraud” → go to details",
+    });
+  });
+});
+
+describe("listener jump warnings", () => {
+  // ask (collect loan_last4) -> talk (agent) -> check (agent, tool needs loan_last4)
+  //                                          -> dispute (API, needs dispute_date, captured on the way) -> done
+  const loanFlow = (): Flow => ({
+    schema_version: 1,
+    flow_id: "loans",
+    name: "Loans",
+    persona: "A loan helpline.",
+    start_node: "ask",
+    settings: {},
+    nodes: {
+      ask: { type: "collect", fields: [{ name: "loan_last4", type: "string", description: "Last 4 digits" }], next: "talk" },
+      talk: {
+        type: "agent",
+        instructions: "Help.",
+        transitions: [
+          { to: "check", when: "A debit question." },
+          { to: "dispute", when: "Dispute.", capture: { dispute_date: { description: "Date" } } },
+        ],
+      },
+      check: {
+        type: "agent",
+        instructions: "Check debits.",
+        tools: [{ tool: "core.recent_debits", inputs: { loan_last4: "{{loan_last4}}", phone: "{{caller_number}}" } }],
+        transitions: [{ to: "done", when: "Done." }],
+      },
+      dispute: {
+        type: "api",
+        tool: "core.raise_dispute",
+        inputs: { loan: "{{loan_last4}}", date: "{{dispute_date}}" },
+        save: ["reference"],
+        next: "done",
+        on_error: "done",
+      },
+      done: { type: "end", instructions: "Close." },
+    },
+  });
+  const watch = (to: string, steps?: string[]): Flow => {
+    const f = loanFlow();
+    f.settings = { listeners: [{ kind: "keyword_watch", name: "fraud_watch", words: ["fraud"], then: "go_to", to, ...(steps ? { steps } : {}) }] };
+    return f;
+  };
+
+  it("knows what every route into a step has collected", () => {
+    const known = collectedBefore(loanFlow());
+    expect([...known.ask!]).toEqual([]);
+    expect([...known.talk!]).toEqual(["loan_last4"]);
+    expect([...known.dispute!].sort()).toEqual(["dispute_date", "loan_last4"]);
+    // done is reached when the dispute fails too: "reference" isn't certain there.
+    expect(known.done!.has("reference")).toBe(false);
+  });
+
+  it("warns when an API step would run without its values", () => {
+    const [w] = listenerJumpWarnings(watch("dispute"));
+    expect(w.missing.sort()).toEqual(["dispute_date", "loan_last4"]);
+    expect(w.steps).toEqual(["ask", "talk", "check", "done"]); // done: also reached when the dispute fails
+    expect(w.text).toContain("which calls core.raise_dispute");
+    expect(w.text).toContain("so the call would fail and go to done");
+  });
+
+  it("warns about a conversation step's tools only where their values may be missing", () => {
+    const [w] = listenerJumpWarnings(watch("check"));
+    expect(w.steps).toEqual(["ask"]); // built-ins like {{caller_number}} are always there
+    expect(w.missing).toEqual(["loan_last4"]);
+    expect(w.text).toContain("whose tools need {{loan_last4}}");
+    expect(listenerJumpWarnings(watch("check", ["talk", "dispute"]))).toEqual([]);
+    expect(listenerJumpWarnings(watch("talk"))).toEqual([]); // no tools: nothing to warn about
+  });
+
+  it("checks a time limit's and an off-topic guard's step too", () => {
+    const f = loanFlow();
+    f.settings = {
+      listeners: [
+        { kind: "time_limit", name: "time_limit", then: "go_to", to: "dispute" },
+        { kind: "off_topic", name: "off_topic", steps: ["check"], then: "go_to", to: "check" },
+      ],
+    };
+    const warnings = listenerJumpWarnings(f);
+    expect(warnings.map((w) => [w.name, w.steps])).toEqual([["time_limit", ["ask", "talk", "check", "done"]]]);
+    expect(changesBetween(null, f)[0]).toEqual({
+      path: "settings.listeners.time_limit",
+      kind: "added",
+      after: "Call time limit time_limit: 30 minutes (warning 2 before) → go to dispute",
     });
   });
 });
