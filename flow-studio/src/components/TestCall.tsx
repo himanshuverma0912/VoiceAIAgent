@@ -6,7 +6,9 @@
 // agent sends both sides) and lives only in this panel: closing it forgets it.
 // When a reply check changes or stops a sentence, the agent says so on the
 // "flow.check" data topic (which check, the step, fix or stop: never the
-// sentence), and the panel shows it where it happened.
+// sentence), and the panel shows it where it happened. Side listeners do the
+// same on "flow.listener" (which listener, what it did, the step: never what
+// the caller said).
 import {
   ParticipantKind,
   Room,
@@ -18,12 +20,12 @@ import {
 } from "livekit-client";
 import { useEffect, useRef, useState } from "react";
 import { ApiError, api } from "../api";
-import { REPLY_CHECKS } from "../spec";
+import { LISTENER_ACTION_TEXT, LISTENER_KIND_LABEL, REPLY_CHECKS, type ListenerKind } from "../spec";
 
 type Phase = "starting" | "waiting" | "live" | "ended";
 interface Line {
   id: string;
-  who: "you" | "agent" | "check";
+  who: "you" | "agent" | "check" | "listener";
   text: string;
   stopped?: boolean;
 }
@@ -40,6 +42,18 @@ function checkLine(raw: Uint8Array, n: number): Line | null {
           : "stopped a sentence before the caller heard it; the agent said the safe line instead"
         : "changed a sentence before the caller heard it";
     return { id: `check-${n}`, who: "check", text: `${label}: ${what} (step ${node})`, stopped: action === "stop" };
+  } catch {
+    return null;
+  }
+}
+
+/** What the panel shows when a side listener acted. */
+function listenerLine(raw: Uint8Array, n: number): Line | null {
+  try {
+    const { listener, kind, action, node } = JSON.parse(new TextDecoder().decode(raw));
+    const kindLabel = LISTENER_KIND_LABEL[kind as ListenerKind] ?? kind;
+    const what = LISTENER_ACTION_TEXT[action] ?? action;
+    return { id: `listener-${n}`, who: "listener", text: `${listener} (${kindLabel}): ${what} (step ${node})` };
   } catch {
     return null;
   }
@@ -104,9 +118,9 @@ export function TestCall(props: { flowId: string; onNode: (id: string | null) =>
         if (p !== room.localParticipant && isAgent(p as RemoteParticipant)) readAgent(p as RemoteParticipant);
       })
       .on(RoomEvent.DataReceived, (payload, _p, _kind, topic) => {
-        if (topic !== "flow.check") return;
+        if (topic !== "flow.check" && topic !== "flow.listener") return;
         setLines((ls) => {
-          const line = checkLine(payload, ls.length);
+          const line = topic === "flow.check" ? checkLine(payload, ls.length) : listenerLine(payload, ls.length);
           return line ? [...ls, line] : ls;
         });
       })
@@ -231,6 +245,11 @@ export function TestCall(props: { flowId: string; onNode: (id: string | null) =>
           l.who === "check" ? (
             <div key={l.id} className={`line check${l.stopped ? " stopped" : ""}`} role="status">
               <span className="who">Check</span>
+              <span>{l.text}</span>
+            </div>
+          ) : l.who === "listener" ? (
+            <div key={l.id} className="line listener" role="status">
+              <span className="who">Listener</span>
               <span>{l.text}</span>
             </div>
           ) : (

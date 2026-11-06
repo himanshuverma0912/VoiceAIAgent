@@ -51,9 +51,10 @@ from livekit.plugins import cartesia, deepgram, noise_cancellation, openai
 from flow_engine import Flow, load_flow
 from flow_engine.calllog import CALLER_HUNG_UP, CallRecorder, send_record
 from flow_engine.language import LanguageHint
+from flow_engine.listeners import mask_chat_ctx
 from flow_engine.resume import ResumeStore, choose_point, load_secret
 from flow_engine.runtime import CallState, default_end_call, resume_agent, start_agent
-from flow_engine.spec import EndNode
+from flow_engine.spec import EndNode, PromiseToPay, SecretGuard
 from flow_engine.source import FlowSource
 from flow_engine.tools import ToolCaller
 
@@ -153,30 +154,56 @@ class FlowLLM(openai.LLM):
     """The OpenAI-compatible LLM, plus a line before every request saying which
     language to answer in, worked out from the caller's latest words (see
     flow_engine/language.py). Covers every step, including LiveKit's built-in
-    questions, because they all go through this one LLM."""
+    questions, because they all go through this one LLM.
 
-    def __init__(self, *, flow_language: str, **kwargs) -> None:
+    mask_secrets (a flow with a secret_guard listener): any OTP, PIN or card
+    number the caller said is taken out of every request first, including a
+    reply LiveKit starts preparing before the caller has finished."""
+
+    def __init__(self, *, flow_language: str, mask_secrets: bool = False, **kwargs) -> None:
         super().__init__(**kwargs)
         self._language = LanguageHint(flow_language)
+        self._mask = mask_secrets
 
     def chat(self, *, chat_ctx, **kwargs):
+        if self._mask:
+            chat_ctx = mask_chat_ctx(chat_ctx)
         return super().chat(chat_ctx=self._language.apply(chat_ctx), **kwargs)
+
+
+def _guards_secrets(flow: Flow) -> bool:
+    return any(isinstance(ls, SecretGuard) for ls in flow.settings.listeners)
 
 
 def build_llm(flow: Flow) -> openai.LLM:
     s = flow.settings
+    mask = _guards_secrets(flow)
     if LITELLM_URL:
         # The flow's model alias wins; LLM_MODEL in .env is the fallback.
         model = s.llm_model or _env("LLM_MODEL", "voice-fast")
         return FlowLLM(
             flow_language=s.language,
+            mask_secrets=mask,
             model=model,
             base_url=f"{LITELLM_URL}/v1",
             api_key=_litellm_key(),
             temperature=s.llm_temperature,
         )
     # Without LiteLLM, model aliases don't exist; use a real OpenAI model name.
-    return FlowLLM(flow_language=s.language, model=_env("LLM_MODEL", "gpt-4o-mini"), temperature=s.llm_temperature)
+    return FlowLLM(
+        flow_language=s.language, mask_secrets=mask, model=_env("LLM_MODEL", "gpt-4o-mini"), temperature=s.llm_temperature
+    )
+
+
+def build_side_llm(flow: Flow) -> openai.LLM | None:
+    """The LLM for side checks (promise to pay), when the flow has one. Same
+    gateway; LISTENER_LLM_MODEL picks a cheaper alias if you have one."""
+    if not any(isinstance(ls, PromiseToPay) for ls in flow.settings.listeners):
+        return None
+    model = _env("LISTENER_LLM_MODEL") or flow.settings.llm_model or _env("LLM_MODEL", "voice-fast")
+    if LITELLM_URL:
+        return openai.LLM(model=model, base_url=f"{LITELLM_URL}/v1", api_key=_litellm_key(), temperature=0)
+    return openai.LLM(model=_env("LISTENER_LLM_MODEL") or _env("LLM_MODEL", "gpt-4o-mini"), temperature=0)
 
 
 def build_stt(flow: Flow) -> deepgram.STT:
@@ -262,6 +289,21 @@ def _report_checks(room: rtc.Room):
     return report
 
 
+def _report_listeners(room: rtc.Room):
+    """Test calls only: tell Flow Studio when a side listener acted (which one,
+    its kind, what it did, the step: never what was said)."""
+    pending: set[asyncio.Task] = set()
+
+    def report(listener: str, kind: str, action: str, node_id: str) -> None:
+        if room.isconnected():
+            data = json.dumps({"listener": listener, "kind": kind, "action": action, "node": node_id}).encode()
+            task = asyncio.create_task(room.local_participant.publish_data(data, reliable=True, topic="flow.listener"))
+            pending.add(task)
+            task.add_done_callback(pending.discard)
+
+    return report
+
+
 def _both(*hooks):
     def call(*args) -> None:
         for hook in hooks:
@@ -328,7 +370,16 @@ async def entrypoint(ctx: agents.JobContext) -> None:
         end_call=lambda goodbye, desc: default_end_call(goodbye, desc, on_called=recorder.agent_ended_call),
         tools=tools,
         on_check=_both(recorder.reply_check, _report_checks(ctx.room)) if studio_test else recorder.reply_check,
+        on_listener=_both(recorder.listener, _report_listeners(ctx.room)) if studio_test else recorder.listener,
+        side_llm=build_side_llm(flow),
     )
+
+    async def hang_up() -> None:
+        # A listener ending the call (keyword watch "end_call").
+        recorder.agent_ended_call()
+        await ctx.delete_room()
+
+    state.hang_up = hang_up
     # Drop-resume: phone calls only, when the flow allows it. A point left by this
     # caller's dropped call (within 15 minutes) is claimed, which deletes it.
     can_resume = not studio_test and flow.settings.resume.enabled and bool(caller_number)
@@ -348,6 +399,7 @@ async def entrypoint(ctx: agents.JobContext) -> None:
             "draft_checksum": resolved.checksum,
             "integrations": sorted(resolved.integrations),
             "reply_checks": list(flow.settings.reply_checks),
+            "listeners": [ls.kind for ls in flow.settings.listeners],
             "resumed": point is not None,
         },
     )
@@ -399,6 +451,12 @@ async def entrypoint(ctx: agents.JobContext) -> None:
     )
 
     recorder.attach(session)
+    state.listeners.attach(session)
+
+    async def stop_listeners() -> None:
+        await state.listeners.aclose()
+
+    ctx.add_shutdown_callback(stop_listeners)
 
     async def end_of_call() -> None:
         # The caller hung up mid-flow: leave a point to pick up from on a call back.

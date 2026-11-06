@@ -102,3 +102,56 @@ describe("changes between versions", () => {
     expect(changes.map((c) => c.path)).toContain("nodes.listen");
   });
 });
+
+describe("side listeners", () => {
+  const withListeners = (): Flow => {
+    const f = flow();
+    f.settings = {
+      ...f.settings,
+      listeners: [
+        { kind: "keyword_watch", name: "fraud_watch", words: ["fraud"], then: "go_to", to: "details" },
+        { kind: "promise_to_pay", name: "promise_to_pay", steps: ["listen", "details"] },
+      ],
+    };
+    return f;
+  };
+
+  it("offers a promise's values as variables", () => {
+    const names = variablesOf(withListeners()).map((v) => v.name);
+    expect(names).toContain("promised_date");
+    expect(names).toContain("promised_amount");
+    expect(variablesOf(flow()).map((v) => v.name)).not.toContain("promised_date");
+  });
+
+  it("follows a renamed step, and stops listening on a deleted one", () => {
+    const renamed = renameNode(withListeners(), "details", "ask_details").settings!.listeners!;
+    expect(renamed[0]).toMatchObject({ to: "ask_details" });
+    expect(renamed[1].steps).toEqual(["listen", "ask_details"]);
+    const deleted = deleteNode(withListeners(), "details").settings!.listeners!;
+    expect(deleted[1].steps).toEqual(["listen"]);
+    // Its only step deleted: left for the editor to fix, not widened to every step.
+    const only = withListeners();
+    only.settings!.listeners![1].steps = ["details"];
+    expect(deleteNode(only, "details").settings!.listeners![1].steps).toEqual(["details"]);
+  });
+
+  it("shows a reviewer each listener as one change, by name", () => {
+    const before = withListeners();
+    const after = clone(before);
+    after.settings!.listeners!.reverse(); // reordering is no change
+    expect(changesBetween(before, after)).toEqual([]);
+    const fraud = after.settings!.listeners!.find((l) => l.name === "fraud_watch")!;
+    if (fraud.kind === "keyword_watch") fraud.words.push("धोखाधड़ी");
+    after.settings!.listeners!.push({ kind: "secret_guard", name: "secret_guard" });
+    const changes = changesBetween(before, after);
+    expect(changes).toContainEqual({ path: "settings.listeners.fraud_watch.words[1]", kind: "added", after: "धोखाधड़ी" });
+    expect(changes).toContainEqual({ path: "settings.listeners.secret_guard", kind: "added", after: "Secret guard secret_guard on every step" });
+    expect(changes).toHaveLength(2);
+    const removed = changesBetween(before, flow());
+    expect(removed).toContainEqual({
+      path: "settings.listeners.fraud_watch",
+      kind: "removed",
+      before: "Keyword watch fraud_watch on every step: “fraud” → go to details",
+    });
+  });
+});

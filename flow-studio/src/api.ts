@@ -271,6 +271,7 @@ export interface Call {
   steps: { node: string; ms: number }[];
   tools?: { tool: string; ok: boolean; ms: number }[];
   checks?: { check: string; node: string; action: "fix" | "stop" }[];
+  listeners?: { listener: string; kind: string; action: string; node: string }[];
   turns: { caller: number; agent: number };
   latency_ms: { p50: number; p95: number; count: number } | null;
   usage: CallUsage;
@@ -294,6 +295,15 @@ export interface CallSummary {
   tools?: { tool: string; uses: number; failed: number; avg_ms: number; p95_ms: number }[];
   /** Reply checks that changed or stopped what the agent was about to say. */
   checks?: { check: string; fired: number; calls: number; stopped: number; steps: Record<string, number> }[];
+  /** Side listeners that acted: which, what they did, on which steps (never what was said). */
+  listeners?: {
+    listener: string;
+    kind: string;
+    acted: number;
+    calls: number;
+    actions: Record<string, number>;
+    steps: Record<string, number>;
+  }[];
   /** Dropped calls that left a point to pick up from, and calls that picked up from one. */
   resume?: { saved: number; resumed: number };
   versions: {

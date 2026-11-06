@@ -20,7 +20,7 @@ export type Selection =
   | { kind: "settings" }
   | { kind: "node"; id: string; transition?: number };
 
-type CardData = { id: string; node: FlowNode; isStart: boolean; problems: number; active: boolean };
+type CardData = { id: string; node: FlowNode; isStart: boolean; problems: number; active: boolean; jumpsHere: string[] };
 
 const COLORS: Record<FlowNode["type"], string> = {
   agent: "var(--agent)",
@@ -54,7 +54,7 @@ function footer(node: FlowNode): string {
 }
 
 const Card = memo(function Card({ data, selected }: NodeProps<RFNode<CardData>>) {
-  const { node, id, isStart, problems, active } = data;
+  const { node, id, isStart, problems, active, jumpsHere } = data;
   return (
     <div
       className={`fs-node${selected ? " selected" : ""}${problems ? " has-problems" : ""}${active ? " active" : ""}`}
@@ -65,6 +65,15 @@ const Card = memo(function Card({ data, selected }: NodeProps<RFNode<CardData>>)
         {NODE_TYPE_LABEL[node.type]}
         {isStart && <span className="chip" style={{ textTransform: "none", letterSpacing: 0 }}>start</span>}
         {active && <span className="chip good" style={{ textTransform: "none", letterSpacing: 0 }}>● now</span>}
+        {jumpsHere.map((name) => (
+          <span
+            key={name}
+            className="chip listener"
+            title={`The side listener ${name} can bring the caller here from any step it listens on`}
+          >
+            ⚡ {name}
+          </span>
+        ))}
       </div>
       <div className="id">{id}</div>
       <div className="text">{summary(node)}</div>
@@ -95,6 +104,12 @@ export function Canvas(props: {
   const { flow, positions, problemsByNode, selection, editable } = props;
   const selectedNode = selection.kind === "node" ? selection.id : null;
   const [nodes, setNodes] = useState<RFNode<CardData>[]>([]);
+  // Steps a keyword watch can jump to, with the listeners that can.
+  const jumps = useMemo(() => {
+    const out: Record<string, string[]> = {};
+    for (const ls of flow.settings?.listeners ?? []) if (ls.kind === "keyword_watch" && ls.then === "go_to" && ls.to) (out[ls.to] ??= []).push(ls.name);
+    return out;
+  }, [flow]);
 
   // Rebuild cards from the flow, keeping what React Flow measured.
   useEffect(() => {
@@ -112,10 +127,11 @@ export function Canvas(props: {
           isStart: id === flow.start_node,
           problems: problemsByNode[id]?.length ?? 0,
           active: id === props.activeNode,
+          jumpsHere: jumps[id] ?? [],
         },
       }));
     });
-  }, [flow, positions, problemsByNode, selectedNode, props.activeNode]);
+  }, [flow, positions, problemsByNode, selectedNode, props.activeNode, jumps]);
 
   const edges = useMemo<RFEdge[]>(
     () =>

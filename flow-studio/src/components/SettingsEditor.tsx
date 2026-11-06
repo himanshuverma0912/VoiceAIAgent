@@ -1,5 +1,6 @@
 import { offeredTo, type CatalogEntry, type CatalogKind, type OfferedTool } from "../api";
 import { BUILTIN_VARIABLES, problemText, type Flow, type FlowSettings } from "../spec";
+import { Listeners } from "./Listeners";
 import { ReplyChecks } from "./ReplyChecks";
 import { ToolUses } from "./Tools";
 import { Check, Field, VarText } from "./ui";
@@ -261,6 +262,20 @@ export function SettingsEditor(props: {
             onChange={(v) => setSetting((x) => (v ? (x.reply_check_line = v) : delete x.reply_check_line))}
           />
         </Field>
+      </div>
+
+      <div className="section">
+        <h3 style={{ marginBottom: 6 }}>Side listeners ({s.listeners?.length ?? 0})</h3>
+        <p className="hint" style={{ marginTop: 0 }}>
+          They follow what the caller says, alongside the conversation, and act when they hear something: warn about secret codes, jump to a
+          step, keep a promise to pay. None run unless you add them.
+        </p>
+        <Listeners
+          flow={flow}
+          editable={ed}
+          vars={vars}
+          change={(listeners) => setSetting((x) => (listeners.length ? (x.listeners = listeners) : delete x.listeners))}
+        />
       </div>
 
       <div className="section">

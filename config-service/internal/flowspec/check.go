@@ -97,6 +97,11 @@ func texts(f *Flow) []located {
 	if f.ReplyCheckLine != "" {
 		out = append(out, located{"settings.reply_check_line", f.ReplyCheckLine})
 	}
+	for i, l := range f.Listeners {
+		if l.Kind != "promise_to_pay" && l.Say != "" {
+			out = append(out, located{fmt.Sprintf("settings.listeners[%d].say", i), l.Say})
+		}
+	}
 	out = append(out, toolInputTexts("tools", f.Tools)...)
 	for _, n := range f.Nodes {
 		base := "nodes." + n.ID
@@ -210,6 +215,89 @@ func replyCheckProblems(f *Flow) []string {
 	return problems
 }
 
+// listenerVariables are the values listeners save, with where (name, where).
+func listenerVariables(f *Flow) []located {
+	var out []located
+	for i, l := range f.Listeners {
+		if l.Kind == "promise_to_pay" {
+			out = append(out,
+				located{l.SaveDate, fmt.Sprintf("settings.listeners[%d].save_date", i)},
+				located{l.SaveAmount, fmt.Sprintf("settings.listeners[%d].save_amount", i)})
+		}
+	}
+	return out
+}
+
+// listenerProblems: names are unique, steps and targets are real nodes, and
+// each kind has what it needs (spec._listener_problems).
+func listenerProblems(f *Flow, isNode func(string) bool) []string {
+	var problems []string
+	add := func(format string, args ...any) { problems = append(problems, fmt.Sprintf(format, args...)) }
+	names := map[string]bool{}
+	kinds := map[string]bool{}
+	for i, l := range f.Listeners {
+		loc := fmt.Sprintf("settings.listeners[%d]", i)
+		if names[l.Name] {
+			add("%s.name: another listener is already called '%s'", loc, l.Name)
+		}
+		names[l.Name] = true
+		if (l.Kind == "secret_guard" || l.Kind == "promise_to_pay") && kinds[l.Kind] {
+			add("%s: the flow already has a %s listener; one is enough", loc, l.Kind)
+		}
+		kinds[l.Kind] = true
+		listed := map[string]bool{}
+		for j, step := range l.Steps {
+			switch {
+			case !isNode(step):
+				add("%s.steps[%d]: '%s' is not a node", loc, j, step)
+			case listed[step]:
+				add("%s.steps[%d]: '%s' is already in the list", loc, j, step)
+			}
+			listed[step] = true
+		}
+		switch l.Kind {
+		case "keyword_watch":
+			if len(l.Words) > MaxListenerWords {
+				add("%s.words: at most %d words or phrases", loc, MaxListenerWords)
+			}
+			heard := map[string]bool{}
+			for j, w := range l.Words {
+				key := strings.ToLower(strings.Join(strings.Fields(w), " "))
+				switch {
+				case key == "":
+					add("%s.words[%d]: a word or phrase can't be empty", loc, j)
+				case len([]rune(w)) > MaxListenerWordLength:
+					add("%s.words[%d]: keep each word or phrase under %d characters", loc, j, MaxListenerWordLength)
+				case heard[key]:
+					add("%s.words[%d]: '%s' is already in the list", loc, j, w)
+				}
+				heard[key] = true
+			}
+			if l.Then == "go_to" {
+				switch {
+				case !l.HasTo:
+					add("%s.to: say which step to go to", loc)
+				case !isNode(l.To):
+					add("%s.to: '%s' is not a node", loc, l.To)
+				}
+			} else if l.HasTo {
+				add("%s.to: only used when 'then' is 'go_to'", loc)
+			}
+			if l.Then == "say" && strings.TrimSpace(l.Say) == "" {
+				add("%s.say: write the line the agent should say", loc)
+			}
+			if l.Then == "flag" && l.Say != "" {
+				add("%s.say: not used when 'then' is 'flag'", loc)
+			}
+		case "promise_to_pay":
+			if l.SaveDate == l.SaveAmount {
+				add("%s.save_amount: must differ from save_date", loc)
+			}
+		}
+	}
+	return problems
+}
+
 func isBuiltinVariable(name string) bool {
 	for _, b := range BuiltinVariables {
 		if b == name {
@@ -288,6 +376,7 @@ func checkFlow(f *Flow) []string {
 	}
 	problems = append(problems, toolNameProblems(f)...)
 	problems = append(problems, replyCheckProblems(f)...)
+	problems = append(problems, listenerProblems(f, func(id string) bool { return byID[id] != nil })...)
 	for _, n := range f.Nodes {
 		for i, t := range n.Transitions {
 			for _, c := range t.Capture {
@@ -355,19 +444,7 @@ func checkFlow(f *Flow) []string {
 	// Variables: each is defined once, doesn't hide a built-in, and every
 	// {{reference}} is a built-in or defined somewhere in the flow.
 	seen := map[string]string{}
-	for _, n := range f.Nodes {
-		var places []located // (variable name, where)
-		for i, t := range n.Transitions {
-			for _, c := range t.Capture {
-				places = append(places, located{c.Name, fmt.Sprintf("nodes.%s.transitions[%d].capture.%s", n.ID, i, c.Name)})
-			}
-		}
-		for i, fl := range n.Fields {
-			places = append(places, located{fl.Name, fmt.Sprintf("nodes.%s.fields[%d]", n.ID, i)})
-		}
-		for i, name := range n.Save {
-			places = append(places, located{name, fmt.Sprintf("nodes.%s.save[%d]", n.ID, i)})
-		}
+	define := func(places []located) { // (variable name, where)
 		for _, p := range places {
 			name, where := p.where, p.text
 			switch {
@@ -380,6 +457,22 @@ func checkFlow(f *Flow) []string {
 			}
 		}
 	}
+	for _, n := range f.Nodes {
+		var places []located
+		for i, t := range n.Transitions {
+			for _, c := range t.Capture {
+				places = append(places, located{c.Name, fmt.Sprintf("nodes.%s.transitions[%d].capture.%s", n.ID, i, c.Name)})
+			}
+		}
+		for i, fl := range n.Fields {
+			places = append(places, located{fl.Name, fmt.Sprintf("nodes.%s.fields[%d]", n.ID, i)})
+		}
+		for i, name := range n.Save {
+			places = append(places, located{name, fmt.Sprintf("nodes.%s.save[%d]", n.ID, i)})
+		}
+		define(places)
+	}
+	define(listenerVariables(f))
 	for _, t := range texts(f) {
 		for _, m := range variableRE.FindAllStringSubmatch(t.text, -1) {
 			if !isBuiltinVariable(m[1]) && seen[m[1]] == "" {
@@ -443,6 +536,24 @@ func bestEffortChecks(data any) []string {
 	defined := map[string]bool{}
 	for _, b := range BuiltinVariables {
 		defined[b] = true
+	}
+	if settings, ok := root.Values["settings"].(*Object); ok {
+		listeners, _ := settings.Values["listeners"].([]any)
+		for _, item := range listeners {
+			l, ok := item.(*Object)
+			if !ok || l.Values["kind"] != "promise_to_pay" {
+				continue
+			}
+			for _, key := range []struct{ name, fallback string }{{"save_date", "promised_date"}, {"save_amount", "promised_amount"}} {
+				v, present := l.Get(key.name)
+				if !present {
+					v = key.fallback
+				}
+				if name, ok := v.(string); ok {
+					defined[name] = true
+				}
+			}
+		}
 	}
 	var found []located
 	for _, key := range []string{"persona", "greeting"} {

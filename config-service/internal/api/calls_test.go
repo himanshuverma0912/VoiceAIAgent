@@ -233,3 +233,78 @@ func TestCallHistoryReplyChecks(t *testing.T) {
 		}
 	}
 }
+
+// Side listeners in call history: which listener acted, what it did, on which
+// step; never what was said or what it kept.
+func TestCallHistoryListeners(t *testing.T) {
+	url := os.Getenv("TEST_DATABASE_URL")
+	if url == "" {
+		t.Skip("TEST_DATABASE_URL not set")
+	}
+	db, err := sql.Open("postgres", url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+	if _, err := db.ExecContext(ctx, `DROP SCHEMA public CASCADE; CREATE SCHEMA public;`); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Migrate(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	kc := authtest.New(t)
+	srv := httptest.NewServer((&Server{
+		Store: store.New(db), AdminToken: adminToken, RuntimeToken: runtimeToken,
+		Users: &auth.Verifier{Issuer: authtest.Issuer, Audience: "config-api", JWKSURL: kc.JWKSURL()},
+	}).Handler())
+	defer srv.Close()
+	c := client{t, srv.URL}
+	vera := kc.Token(t, "vera@demo.corp", []string{"viewer"}, []string{"emi"}, nil)
+	c.json("PUT", "/v1/workspaces/emi", adminToken, []byte(`{"name": "EMI"}`), 201)
+	c.json("PUT", "/v1/flows/emi_payment_issue/draft?workspace=emi", adminToken, spec(t, "emi-payment-issue.json"), 200)
+
+	now := time.Now()
+	withListeners := func(id string, listeners string) []byte {
+		rec := string(callRecord(id, "completed", now.Add(-time.Minute), 2, "greet", "ask_loan", "goodbye"))
+		return []byte(strings.Replace(rec, `"turns":`, `"listeners": `+listeners+`, "turns":`, 1))
+	}
+	c.json("POST", "/internal/v1/calls", runtimeToken, withListeners("AJ_l1", `[
+		{"listener": "fraud_watch", "kind": "keyword_watch", "action": "go_to", "node": "ask_loan"},
+		{"listener": "secret_guard", "kind": "secret_guard", "action": "warned", "node": "greet"},
+		{"listener": "secret_guard", "kind": "secret_guard", "action": "warned", "node": "ask_loan"}]`), 201)
+	c.json("POST", "/internal/v1/calls", runtimeToken, withListeners("AJ_l2", `[
+		{"listener": "secret_guard", "kind": "secret_guard", "action": "warned", "node": "greet"},
+		{"listener": "promise_to_pay", "kind": "promise_to_pay", "action": "saved", "node": "goodbye"}]`), 201)
+	c.json("POST", "/internal/v1/calls", runtimeToken, callRecord("AJ_l3", "completed", now.Add(-time.Minute), 2, "greet"), 201)
+
+	for name, listeners := range map[string]string{
+		"unknown kind":   `[{"listener": "x", "kind": "mind_reader", "action": "flag", "node": "greet"}]`,
+		"unknown action": `[{"listener": "x", "kind": "keyword_watch", "action": "transfer", "node": "greet"}]`,
+		"bad name":       `[{"listener": "Fraud Watch", "kind": "keyword_watch", "action": "flag", "node": "greet"}]`,
+		"not a node id":  `[{"listener": "x", "kind": "keyword_watch", "action": "flag", "node": "Asha Rao"}]`,
+		"what was said":  `[{"listener": "x", "kind": "keyword_watch", "action": "flag", "node": "greet", "heard": "fraud"}]`,
+		"what was kept":  `[{"listener": "p", "kind": "promise_to_pay", "action": "saved", "node": "greet", "date": "2026-11-10"}]`,
+	} {
+		want := 422
+		if name == "what was said" || name == "what was kept" {
+			want = 400 // unknown fields are refused outright
+		}
+		c.json("POST", "/internal/v1/calls", runtimeToken, withListeners("AJ_bad", listeners), want)
+	}
+
+	sum := c.json("GET", "/v1/flows/emi_payment_issue/calls/summary?days=7", vera, nil, 200)
+	want := `[{"acted":3,"actions":{"warned":3},"calls":2,"kind":"secret_guard","listener":"secret_guard","steps":{"ask_loan":1,"greet":2}},` +
+		`{"acted":1,"actions":{"go_to":1},"calls":1,"kind":"keyword_watch","listener":"fraud_watch","steps":{"ask_loan":1}},` +
+		`{"acted":1,"actions":{"saved":1},"calls":1,"kind":"promise_to_pay","listener":"promise_to_pay","steps":{"goodbye":1}}]`
+	if got := toJSON(sum["listeners"]); got != want {
+		t.Fatalf("listeners summary:\n got %s\nwant %s", got, want)
+	}
+	list := c.json("GET", "/v1/flows/emi_payment_issue/calls", vera, nil, 200)["calls"].([]any)
+	for _, call := range list {
+		m := call.(map[string]any)
+		if m["call_id"] == "AJ_l3" && toJSON(m["listeners"]) != `[]` {
+			t.Fatalf("call without listeners: %v", m["listeners"])
+		}
+	}
+}

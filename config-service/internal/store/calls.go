@@ -33,6 +33,16 @@ type CallCheck struct {
 	Action string `json:"action"` // "fix" or "stop"
 }
 
+// CallListener is a side listener that acted: which, its kind, what it did
+// (warned, go_to, say, flag, end_call, saved), on which step. Never what was
+// said or what it kept.
+type CallListener struct {
+	Listener string `json:"listener"`
+	Kind     string `json:"kind"`
+	Action   string `json:"action"`
+	Node     string `json:"node"`
+}
+
 type CallTurns struct {
 	Caller int `json:"caller"`
 	Agent  int `json:"agent"`
@@ -61,23 +71,24 @@ func (u *CallUsage) Add(o CallUsage) {
 }
 
 type Call struct {
-	CallID      string       `json:"call_id"`
-	FlowID      string       `json:"flow_id"`
-	FlowVersion *int         `json:"flow_version"`
-	FlowSource  string       `json:"flow_source"`
-	Channel     string       `json:"channel"`
-	Runtime     string       `json:"runtime"`
-	StartedAt   time.Time    `json:"started_at"`
-	DurationMs  int          `json:"duration_ms"`
-	Outcome     string       `json:"outcome"`
-	Steps       []CallStep   `json:"steps"`
-	Tools       []CallTool   `json:"tools"`
-	Checks      []CallCheck  `json:"checks"`
-	Resumed     bool         `json:"resumed"`      // picked up from a dropped call
-	ResumeSaved bool         `json:"resume_saved"` // dropped mid-flow; left a point to pick up from
-	Turns       CallTurns    `json:"turns"`
-	LatencyMs   *CallLatency `json:"latency_ms"`
-	Usage       CallUsage    `json:"usage"`
+	CallID      string         `json:"call_id"`
+	FlowID      string         `json:"flow_id"`
+	FlowVersion *int           `json:"flow_version"`
+	FlowSource  string         `json:"flow_source"`
+	Channel     string         `json:"channel"`
+	Runtime     string         `json:"runtime"`
+	StartedAt   time.Time      `json:"started_at"`
+	DurationMs  int            `json:"duration_ms"`
+	Outcome     string         `json:"outcome"`
+	Steps       []CallStep     `json:"steps"`
+	Tools       []CallTool     `json:"tools"`
+	Checks      []CallCheck    `json:"checks"`
+	Listeners   []CallListener `json:"listeners"`
+	Resumed     bool           `json:"resumed"`      // picked up from a dropped call
+	ResumeSaved bool           `json:"resume_saved"` // dropped mid-flow; left a point to pick up from
+	Turns       CallTurns      `json:"turns"`
+	LatencyMs   *CallLatency   `json:"latency_ms"`
+	Usage       CallUsage      `json:"usage"`
 }
 
 // AddCall stores a call. Sending the same call twice is fine: the second
@@ -105,6 +116,13 @@ func (s *Store) AddCall(ctx context.Context, c *Call) (created bool, err error) 
 	if err != nil {
 		return false, err
 	}
+	if c.Listeners == nil {
+		c.Listeners = []CallListener{}
+	}
+	listeners, err := json.Marshal(c.Listeners)
+	if err != nil {
+		return false, err
+	}
 	var p50, p95 sql.NullInt64
 	count := 0
 	if c.LatencyMs != nil {
@@ -115,12 +133,12 @@ func (s *Store) AddCall(ctx context.Context, c *Call) (created bool, err error) 
 	res, err := s.db.ExecContext(ctx, `
 		INSERT INTO calls (call_id, flow_id, flow_version, flow_source, channel, runtime, started_at,
 			duration_ms, outcome, steps, caller_turns, agent_turns, latency_p50_ms, latency_p95_ms,
-			latency_count, usage, tools, resumed, resume_saved, checks)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
+			latency_count, usage, tools, resumed, resume_saved, checks, listeners)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
 		ON CONFLICT (call_id) DO NOTHING`,
 		c.CallID, c.FlowID, c.FlowVersion, c.FlowSource, c.Channel, c.Runtime, c.StartedAt,
 		c.DurationMs, c.Outcome, string(steps), c.Turns.Caller, c.Turns.Agent, p50, p95, count, string(usage), string(tools),
-		c.Resumed, c.ResumeSaved, string(checks))
+		c.Resumed, c.ResumeSaved, string(checks), string(listeners))
 	if err != nil {
 		return false, err
 	}
@@ -134,7 +152,7 @@ func (s *Store) ListCalls(ctx context.Context, flowID, channel string, since tim
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT call_id, flow_id, flow_version, flow_source, channel, runtime, started_at, duration_ms,
 			outcome, steps, caller_turns, agent_turns, latency_p50_ms, latency_p95_ms, latency_count, usage, tools,
-			resumed, resume_saved, checks
+			resumed, resume_saved, checks, listeners
 		FROM calls
 		WHERE flow_id = $1 AND started_at >= $2 AND ($3 = '' OR channel = $3)
 		ORDER BY started_at DESC
@@ -148,10 +166,10 @@ func (s *Store) ListCalls(ctx context.Context, flowID, channel string, since tim
 		var c Call
 		var version, p50, p95 sql.NullInt64
 		var count int
-		var steps, usage, tools, checks []byte
+		var steps, usage, tools, checks, listeners []byte
 		if err := rows.Scan(&c.CallID, &c.FlowID, &version, &c.FlowSource, &c.Channel, &c.Runtime,
 			&c.StartedAt, &c.DurationMs, &c.Outcome, &steps, &c.Turns.Caller, &c.Turns.Agent,
-			&p50, &p95, &count, &usage, &tools, &c.Resumed, &c.ResumeSaved, &checks); err != nil {
+			&p50, &p95, &count, &usage, &tools, &c.Resumed, &c.ResumeSaved, &checks, &listeners); err != nil {
 			return nil, err
 		}
 		if version.Valid {
@@ -171,6 +189,9 @@ func (s *Store) ListCalls(ctx context.Context, flowID, channel string, since tim
 			return nil, err
 		}
 		if err := json.Unmarshal(checks, &c.Checks); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal(listeners, &c.Listeners); err != nil {
 			return nil, err
 		}
 		c.StartedAt = c.StartedAt.UTC()

@@ -350,6 +350,60 @@ CASES += [
     case("reply check line not a string", set_path(["settings", "reply_check_line"], 5)),
 ]
 
+LS = ["settings", "listeners"]
+GUARD = {"kind": "secret_guard", "name": "secret_guard"}
+WATCH = {"kind": "keyword_watch", "name": "fraud_watch", "words": ["fraud", "धोखाधड़ी"], "then": "go_to", "to": "details"}
+PROMISE = {"kind": "promise_to_pay", "name": "promise_to_pay", "steps": ["ask"]}
+CASES += [
+    case(
+        "valid listeners",
+        many(
+            set_path(LS, [{**GUARD, "say": "Don't share codes, {{caller_number}}."}, WATCH, PROMISE]),
+            set_path(["nodes", "done", "instructions"], "Thank {{full_name}}; promised {{promised_date}} {{promised_amount}}."),
+        ),
+    ),
+    case("listeners not a list", set_path(LS, GUARD)),
+    case("listener not an object", set_path(LS, ["secret_guard"])),
+    case("listener without a kind", set_path(LS, [{"name": "x"}])),
+    case("listener of an unknown kind", set_path(LS, [{"kind": "sentiment", "name": "x"}])),
+    case("listener kind not a string", set_path(LS, [{"kind": 5, "name": "x"}])),
+    case("listener without a name", set_path(LS, [{"kind": "secret_guard"}])),
+    case("listener bad name", set_path(LS, [{**GUARD, "name": "Secret Guard"}])),
+    case("listener unknown key", set_path(LS, [{**GUARD, "words": ["otp"]}])),
+    case("listener steps", set_path(LS, [{**GUARD, "steps": ["ask", "nowhere", "ask", "Bad"]}])),
+    case("two listeners with one name", set_path(LS, [WATCH, {**WATCH, "then": "flag", "to": None}])),
+    case("two secret guards", set_path(LS, [GUARD, {**GUARD, "name": "guard_two"}])),
+    case("two promise listeners", set_path(LS, [PROMISE, {**PROMISE, "name": "promise_two", "save_date": "d2", "save_amount": "a2"}])),
+    case("keyword watch without words", set_path(LS, [{k: v for k, v in WATCH.items() if k != "words"}])),
+    case("keyword watch empty words", set_path(LS, [{**WATCH, "words": []}])),
+    case("keyword watch words", set_path(LS, [{**WATCH, "words": ["Fraud", " fraud ", "  ", "x" * 81, 7]}])),
+    case("keyword watch repeated and blank words", set_path(LS, [{**WATCH, "words": ["Fraud", " fraud ", "  ", "x" * 81, "धोखा" * 21]}])),
+    case("keyword watch too many words", set_path(LS, [{**WATCH, "words": [f"w{i}" for i in range(51)]}])),
+    case("keyword watch without then", set_path(LS, [{k: v for k, v in WATCH.items() if k != "then"}])),
+    case("keyword watch unknown action", set_path(LS, [{**WATCH, "then": "transfer"}])),
+    case("keyword watch go_to without to", set_path(LS, [{k: v for k, v in WATCH.items() if k != "to"}])),
+    case("keyword watch go_to unknown step", set_path(LS, [{**WATCH, "to": "nowhere"}])),
+    case("keyword watch to with flag", set_path(LS, [{**WATCH, "then": "flag", "say": "Hmm"}])),
+    case("keyword watch say without a line", set_path(LS, [{**WATCH, "then": "say", "to": None, "say": " "}])),
+    case("keyword watch end call", set_path(LS, [{**WATCH, "then": "end_call", "to": None, "say": "Bye {{full_name}}."}])),
+    case("keyword watch say unknown variable", set_path(LS, [{**WATCH, "say": "Hello {{customer}}"}])),
+    case("keyword watch once not a boolean", set_path(LS, [{**WATCH, "once": "yes"}])),
+    case("promise saves clash", set_path(LS, [{**PROMISE, "save_date": "x", "save_amount": "x"}])),
+    case("promise saves a built-in", set_path(LS, [{**PROMISE, "save_date": "today_ist"}])),
+    case("promise saves an existing value", set_path(LS, [{**PROMISE, "save_amount": "city"}])),
+    case("promise bad save name", set_path(LS, [{**PROMISE, "save_date": "Promised Date"}])),
+    case("promise unknown key", set_path(LS, [{**PROMISE, "then": "flag"}])),
+    case("resume keeps a promise", many(set_path(LS, [PROMISE]), set_path(RESUME, {"enabled": True, "keep": ["promised_date"]}))),
+    case(
+        "promise variable with a shape problem elsewhere",
+        many(
+            set_path(LS, [{**PROMISE, "save_date": "paid_by"}]),
+            set_path(["nodes", "done", "instructions"], "By {{paid_by}} or {{promised_amount}} or {{nope}}."),
+            set_path(["nodes", "done", "goodbye"], 5),
+        ),
+    ),
+]
+
 CASES.append({"name": "top level is a list", "flow": []})
 
 
