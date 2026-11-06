@@ -105,7 +105,7 @@ All `/v1` routes need `Authorization: Bearer <token>`. Through Caddy they're at
 | `PUT /v1/flows/{flow_id}/layout` | maker | Where Flow Studio draws the nodes (not part of the flow) |
 | `POST /v1/flows/{flow_id}/test-sessions` | maker or checker | "Test call": a LiveKit room token with the agent dispatched to run the saved draft (5 minutes; 20 per person per hour) |
 | `GET /v1/flows/{flow_id}/calls?days=7&channel=phone&limit=50` | member | Recent calls (channel `phone`, `studio_test` or `all`) |
-| `GET /v1/flows/{flow_id}/calls/summary?days=7&channel=phone` | member | Outcomes, durations, reply speed, where callers drop off, tools and reply checks, per version and per day |
+| `GET /v1/flows/{flow_id}/calls/summary?days=7&channel=phone` | member | Outcomes, durations, reply speed, where callers drop off, tools, reply checks and side listeners, per version and per day |
 | `GET /v1/catalog` | signed in | The models flows may use (LLMs, speech-to-text models, voices); admins also see switched-off ones |
 | `PUT /v1/catalog/{kind}/{model_id}` | platform-admin | Add or change one: kind `llm` (LiteLLM alias), `stt` (Deepgram model) or `tts_voice` (Cartesia voice id); `{"label", "notes", "languages": [], "workspaces": [], "enabled": true}` |
 | `DELETE /v1/catalog/{kind}/{model_id}` | platform-admin | Remove one nothing uses (409 lists the flows that still do) |
@@ -271,6 +271,29 @@ writing it in `reply_checks.py`, then adding its name to `REPLY_CHECKS` in
 
 Deploy this service before an agent that has reply checks: an older service
 refuses call records that list them.
+
+## Side listeners
+
+Side listeners follow what the caller says, alongside the conversation, and act
+when they hear something (`flow_engine/listeners.py`). A flow lists them in
+`settings.listeners`; each has a `kind`, a `name` (shown in test calls and call
+history) and optional `steps` (empty: every step):
+
+| Kind | What it does |
+|---|---|
+| `secret_guard` | The caller starts reading out an OTP, PIN, CVV, password or a full card or account number: the agent warns them at once (`say`, or a default in the flow's language), and that turn never reaches the AI or the conversation history. "PIN code" (a postal code) and ordinary numbers aren't secrets. |
+| `keyword_watch` | One of `words` is said: `then` `go_to` a step (`to`; the step hears what was said), `say` a line, `flag` the call (the agent answers as usual), or `end_call` (after `say`, or a goodbye). `once` (default true): only the first time in a call. |
+| `promise_to_pay` | After each thing the caller says on its steps, a small AI check (the flow's model, or `LISTENER_LLM_MODEL` on the agent) asks whether it was a promise to pay; a promise is kept as `{{promised_date}}` and `{{promised_amount}}` (or `save_date` / `save_amount`), which later steps see and resume can keep. The agent's reply doesn't wait for it. |
+
+The service refuses unknown kinds, two listeners with one name, a second
+`secret_guard` or `promise_to_pay`, steps or targets that aren't nodes, empty
+or repeated words, and a `say` the action doesn't use. Call history records
+which listener acted, on which step and what it did (`warned`, `go_to`, `say`,
+`flag`, `end_call`, `saved`); never what was said or what was kept (Flow
+Studio: Calls → Side listeners).
+
+Deploy this service before an agent with listeners: an older service refuses
+call records that list them, and flows that have them.
 
 ## AI flow builder
 

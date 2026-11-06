@@ -5,7 +5,7 @@ import { useEffect, useState } from "react";
 import { api, type Call, type CallSummary, type Channel, type FlowSummary, type Outcome } from "../api";
 import { PageHero, timeAgo } from "../components/ui";
 import { Link } from "../router";
-import { REPLY_CHECKS } from "../spec";
+import { LISTENER_ACTION_TEXT, LISTENER_KIND_LABEL, REPLY_CHECKS, type ListenerKind } from "../spec";
 
 const OUTCOME: Record<Outcome, { label: string; tone: string; help: string }> = {
   completed: { label: "Completed", tone: "good", help: "Reached an end step and the agent said goodbye" },
@@ -307,6 +307,58 @@ function Report({ summary, calls }: { summary: CallSummary; calls: Call[] }) {
                     <td className="num">{c.calls}</td>
                     <td className="small-text">
                       {Object.entries(c.steps)
+                        .sort((a, b) => b[1] - a[1])
+                        .map(([node, n]) => (
+                          <span key={node} className="step-count">
+                            <code>{node}</code> {n}
+                          </span>
+                        ))}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
+
+      {summary.listeners && summary.listeners.length > 0 && (
+        <section className="card calls-section">
+          <h2>Side listeners</h2>
+          <p className="muted small-text">
+            How often each listener acted, what it did and on which steps. What the caller said, and any promise it kept, is never stored.
+          </p>
+          <div className="table-wrap">
+            <table className="data">
+              <thead>
+                <tr>
+                  <th>Listener</th>
+                  <th className="num">Times</th>
+                  <th className="num">Calls</th>
+                  <th>What it did</th>
+                  <th>Steps</th>
+                </tr>
+              </thead>
+              <tbody>
+                {summary.listeners.map((l) => (
+                  <tr key={`${l.listener}/${l.kind}`}>
+                    <td>
+                      <code>{l.listener}</code>
+                      <div className="hint">{LISTENER_KIND_LABEL[l.kind as ListenerKind] ?? l.kind}</div>
+                    </td>
+                    <td className="num">{l.acted}</td>
+                    <td className="num">{l.calls}</td>
+                    <td className="small-text">
+                      {Object.entries(l.actions)
+                        .sort((a, b) => b[1] - a[1])
+                        .map(([action, n]) => (
+                          <div key={action}>
+                            {LISTENER_ACTION_TEXT[action] ?? action}: {n}
+                          </div>
+                        ))}
+                    </td>
+                    <td className="small-text">
+                      {Object.entries(l.steps)
                         .sort((a, b) => b[1] - a[1])
                         .map(([node, n]) => (
                           <span key={node} className="step-count">

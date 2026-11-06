@@ -51,6 +51,19 @@ conversation step's "reply_checks" adds more there, and
 settings.reply_check_line is what the caller hears when a check stops a
 reply (each check has an English and a Hindi default).
 
+Side listeners
+--------------
+settings.listeners run alongside the conversation and act on what the caller
+says (see listeners.py), on every step or only the steps listed in "steps":
+  secret_guard    the caller starts reading out an OTP, PIN, CVV or a full card
+                  number: the agent warns them at once, and those words never
+                  reach the AI or the conversation history
+  keyword_watch   one of "words" is said: "then" go_to a step ("to"), say a
+                  line ("say"), flag the call, or end_call
+  promise_to_pay  a small AI check after each thing the caller says: a promise
+                  to pay is kept as {{promised_date}} and {{promised_amount}}
+                  (or the names in save_date / save_amount)
+
 Variables
 ---------
 Text fields can use {{variable}}. Built-ins: caller_number, dialed_number,
@@ -97,6 +110,12 @@ TOOL_MESSAGE = "must be '<integration>.<tool>', e.g. 'demo_bank.get_card_balance
 # the same list (flowspec.ReplyChecks).
 REPLY_CHECKS = ("mask_long_numbers", "amounts_from_tools", "no_promises")
 ReplyCheckName = Literal["mask_long_numbers", "amounts_from_tools", "no_promises"]
+
+# Side listeners (listeners.py). The config service keeps the same lists.
+LISTENER_KINDS = ("secret_guard", "keyword_watch", "promise_to_pay")
+LISTENER_ACTIONS = ("go_to", "say", "flag", "end_call")
+MAX_LISTENER_WORDS = 50
+MAX_LISTENER_WORD_LENGTH = 80
 
 
 class _Strict(BaseModel):
@@ -265,6 +284,35 @@ class EndNode(_Strict):
 Node = Annotated[Union[AgentNode, CollectNode, ApiNode, EndNode], Field(discriminator="type")]
 
 
+class SecretGuard(_Strict):
+    kind: Literal["secret_guard"]
+    name: Identifier = Field(description="Shown in test calls and call history, e.g. 'secret_guard'")
+    steps: list[Identifier] = Field(default_factory=list, description="Steps it listens on (empty: every step)")
+    say: str = Field(default="", description="The warning (empty: a default in the flow's language)")
+
+
+class KeywordWatch(_Strict):
+    kind: Literal["keyword_watch"]
+    name: Identifier = Field(description="Shown in test calls and call history, e.g. 'fraud_watch'")
+    steps: list[Identifier] = Field(default_factory=list, description="Steps it listens on (empty: every step)")
+    words: list[str] = Field(min_length=1, description="Words or phrases to listen for, in every language callers use")
+    then: Literal["go_to", "say", "flag", "end_call"] = Field(description="What to do when one is said")
+    to: Identifier | None = Field(default=None, description="then 'go_to': the step to go to")
+    say: str = Field(default="", description="A line to say (then 'say'; optional before 'go_to' or 'end_call')")
+    once: bool = Field(default=True, description="Act only the first time in a call")
+
+
+class PromiseToPay(_Strict):
+    kind: Literal["promise_to_pay"]
+    name: Identifier = Field(description="Shown in test calls and call history, e.g. 'promise_to_pay'")
+    steps: list[Identifier] = Field(default_factory=list, description="Steps it listens on (empty: every step)")
+    save_date: Identifier = Field(default="promised_date", description="Variable for the date the caller promised")
+    save_amount: Identifier = Field(default="promised_amount", description="Variable for the amount (if they said one)")
+
+
+Listener = Annotated[Union[SecretGuard, KeywordWatch, PromiseToPay], Field(discriminator="kind")]
+
+
 class ResumeSettings(_Strict):
     enabled: bool = Field(default=False, description="Let a caller who hung up mid-flow carry on within 15 minutes")
     keep: list[Identifier] = Field(
@@ -284,6 +332,9 @@ class FlowSettings(_Strict):
     )
     reply_check_line: str = Field(
         default="", description="Said instead when a check stops a reply (empty: a default in the flow's language)"
+    )
+    listeners: list[Listener] = Field(
+        default_factory=list, description="Side listeners: act on what the caller says, alongside the conversation"
     )
 
 
@@ -337,6 +388,9 @@ def _texts(flow: Flow) -> list[tuple[str, str]]:
         out.append(("greeting", flow.greeting))
     if flow.settings.reply_check_line:
         out.append(("settings.reply_check_line", flow.settings.reply_check_line))
+    for i, ls in enumerate(flow.settings.listeners):
+        if not isinstance(ls, PromiseToPay) and ls.say:
+            out.append((f"settings.listeners[{i}].say", ls.say))
     out += _tool_input_texts("tools", flow.tools)
     for nid, node in flow.nodes.items():
         if isinstance(node, ApiNode):
@@ -379,7 +433,19 @@ def defined_variables(flow: Flow) -> dict[str, str]:
     for nid, node in flow.nodes.items():
         for var, where in _variable_places(nid, node):
             defined.setdefault(var, where)
+    for var, where in _listener_variables(flow):
+        defined.setdefault(var, where)
     return defined
+
+
+def _listener_variables(flow: Flow) -> list[tuple[str, str]]:
+    """(variable, where) for the values listeners save."""
+    out: list[tuple[str, str]] = []
+    for i, ls in enumerate(flow.settings.listeners):
+        if isinstance(ls, PromiseToPay):
+            out.append((ls.save_date, f"settings.listeners[{i}].save_date"))
+            out.append((ls.save_amount, f"settings.listeners[{i}].save_amount"))
+    return out
 
 
 def check_flow(flow: Flow) -> list[str]:
@@ -422,6 +488,7 @@ def check_flow(flow: Flow) -> list[str]:
                     problems.append(f"nodes.{nid}.{key}: a node can't move to itself")
     problems += _tool_name_problems(flow)
     problems += _reply_check_problems(flow)
+    problems += _listener_problems(flow, ids)
     for nid, node in flow.nodes.items():
         if isinstance(node, AgentNode):
             for i, t in enumerate(node.transitions):
@@ -460,14 +527,14 @@ def check_flow(flow: Flow) -> list[str]:
     # Variables: each is defined once, doesn't hide a built-in, and every
     # {{reference}} is a built-in or defined somewhere in the flow.
     seen: dict[str, str] = {}
-    for nid, node in flow.nodes.items():
-        for var, where in _variable_places(nid, node):
-            if var in BUILTIN_VARIABLES:
-                problems.append(f"{where}: '{var}' is a built-in variable; choose another name")
-            elif var in seen:
-                problems.append(f"{where}: '{var}' is already defined at {seen[var]}; use a different name")
-            else:
-                seen[var] = where
+    places = [p for nid, node in flow.nodes.items() for p in _variable_places(nid, node)]
+    for var, where in places + _listener_variables(flow):
+        if var in BUILTIN_VARIABLES:
+            problems.append(f"{where}: '{var}' is a built-in variable; choose another name")
+        elif var in seen:
+            problems.append(f"{where}: '{var}' is already defined at {seen[var]}; use a different name")
+        else:
+            seen[var] = where
     known = set(BUILTIN_VARIABLES) | set(seen)
     for where, text in _texts(flow):
         for var in VARIABLE_RE.findall(text):
@@ -538,6 +605,55 @@ def _reply_check_problems(flow: Flow) -> list[str]:
     return problems
 
 
+def _listener_problems(flow: Flow, ids: set[str]) -> list[str]:
+    """Names are unique, steps and targets are real nodes, and each kind has what it needs."""
+    problems: list[str] = []
+    names: set[str] = set()
+    kinds: set[str] = set()
+    for i, ls in enumerate(flow.settings.listeners):
+        loc = f"settings.listeners[{i}]"
+        if ls.name in names:
+            problems.append(f"{loc}.name: another listener is already called '{ls.name}'")
+        names.add(ls.name)
+        if ls.kind in ("secret_guard", "promise_to_pay") and ls.kind in kinds:
+            problems.append(f"{loc}: the flow already has a {ls.kind} listener; one is enough")
+        kinds.add(ls.kind)
+        listed: set[str] = set()
+        for j, step in enumerate(ls.steps):
+            if step not in ids:
+                problems.append(f"{loc}.steps[{j}]: '{step}' is not a node")
+            elif step in listed:
+                problems.append(f"{loc}.steps[{j}]: '{step}' is already in the list")
+            listed.add(step)
+        if isinstance(ls, KeywordWatch):
+            if len(ls.words) > MAX_LISTENER_WORDS:
+                problems.append(f"{loc}.words: at most {MAX_LISTENER_WORDS} words or phrases")
+            heard: set[str] = set()
+            for j, word in enumerate(ls.words):
+                key = " ".join(word.split()).lower()
+                if not key:
+                    problems.append(f"{loc}.words[{j}]: a word or phrase can't be empty")
+                elif len(word) > MAX_LISTENER_WORD_LENGTH:
+                    problems.append(f"{loc}.words[{j}]: keep each word or phrase under {MAX_LISTENER_WORD_LENGTH} characters")
+                elif key in heard:
+                    problems.append(f"{loc}.words[{j}]: '{word}' is already in the list")
+                heard.add(key)
+            if ls.then == "go_to":
+                if ls.to is None:
+                    problems.append(f"{loc}.to: say which step to go to")
+                elif ls.to not in ids:
+                    problems.append(f"{loc}.to: '{ls.to}' is not a node")
+            elif ls.to is not None:
+                problems.append(f"{loc}.to: only used when 'then' is 'go_to'")
+            if ls.then == "say" and not ls.say.strip():
+                problems.append(f"{loc}.say: write the line the agent should say")
+            if ls.then == "flag" and ls.say:
+                problems.append(f"{loc}.say: not used when 'then' is 'flag'")
+        if isinstance(ls, PromiseToPay) and ls.save_date == ls.save_amount:
+            problems.append(f"{loc}.save_amount: must differ from save_date")
+    return problems
+
+
 def _unknown_variable(where: str, var: str) -> str:
     return (
         f"{where}: unknown variable {{{{{var}}}}}; built-ins are "
@@ -581,6 +697,14 @@ def _best_effort_checks(data: object) -> list[str]:
         problems.append(f"start_node: '{start}' is not a node (nodes: {', '.join(sorted(map(str, nodes)))})")
 
     defined = set(BUILTIN_VARIABLES)
+    settings = data.get("settings")
+    listeners = settings.get("listeners") if isinstance(settings, dict) else None
+    for ls in listeners if isinstance(listeners, list) else []:
+        if isinstance(ls, dict) and ls.get("kind") == "promise_to_pay":
+            for key, default in (("save_date", "promised_date"), ("save_amount", "promised_amount")):
+                value = ls.get(key, default)
+                if isinstance(value, str):
+                    defined.add(value)
     texts: list[tuple[str, str]] = []
     for key in ("persona", "greeting"):
         if isinstance(data.get(key), str):
@@ -626,9 +750,10 @@ def _format_loc(loc: tuple) -> str:
     """('nodes', 'ask', 'agent', 'transitions', 0, 'to') -> 'nodes.ask.transitions[0].to'.
 
     pydantic puts the chosen union member's tag in the location: right after a
-    node id ('agent', 'collect', 'end') and right after a field's index
-    ('custom', 'builtin:name', ...). Those are dropped by position, so a node
-    that happens to be called "end" keeps its name."""
+    node id ('agent', 'collect', 'end'), right after a field's index
+    ('custom', 'builtin:name', ...) and right after a listener's index
+    ('keyword_watch', ...). Those are dropped by position, so a node that
+    happens to be called "end" keeps its name."""
     out = ""
     for i, part in enumerate(loc):
         if i == 2 and loc[0] == "nodes" and part in ("agent", "collect", "api", "end"):
@@ -640,6 +765,8 @@ def _format_loc(loc: tuple) -> str:
             and isinstance(part, str)
             and (part == "custom" or part.startswith("builtin:"))
         ):
+            continue
+        if i >= 2 and isinstance(loc[i - 1], int) and loc[i - 2] == "listeners" and part in LISTENER_KINDS:
             continue
         if isinstance(part, int):
             out += f"[{part}]"
@@ -664,6 +791,8 @@ def _format_pydantic_error(err: dict) -> str:
         if tag.startswith("builtin:"):
             loc += ".builtin"
             msg = f"unknown built-in '{tag[len('builtin:'):]}'; use one of {', '.join(BUILTIN_FIELDS)}"
+        elif loc.startswith("settings.listeners["):
+            msg = f"unknown listener kind '{tag}'; use 'secret_guard', 'keyword_watch' or 'promise_to_pay'"
         else:
             msg = f"unknown node type '{tag}'; use 'agent', 'collect', 'api' or 'end'"
     return f"{loc or '(top level)'}: {msg}"

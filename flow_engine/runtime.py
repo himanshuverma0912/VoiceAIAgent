@@ -32,6 +32,9 @@ then goes back to where they were instead of its usual "next".
 Reply checks (see reply_checks.py): every step that talks passes the LLM's
 reply through the flow's checks, sentence by sentence, before text-to-speech.
 
+Side listeners (see listeners.py): every agent and question hands the caller's
+finished turn to the call's Listeners before the AI answers it.
+
 Every node's instructions are built the same way: persona, guardrails,
 values collected so far, then the node's own instructions, with
 {{variables}} filled in.
@@ -47,7 +50,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from collections.abc import AsyncIterable, Callable
+from collections.abc import AsyncIterable, Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
@@ -79,6 +82,7 @@ from .spec import (
     Flow,
     ToolUse,
 )
+from .listeners import Listeners
 from .reply_checks import AMOUNT_RETRY, AMOUNT_RULE, CheckContext, Fired, checked, numbers_in
 from .resume import ResumePoint
 from .tools import ToolCaller, ToolFailed, for_llm, json_schema
@@ -169,6 +173,16 @@ class CallState:
     tool_numbers: set[Decimal] = field(default_factory=set)
     # Called with (check, action, node) when a reply check changes or stops a reply.
     on_check: Callable[[str, str, str], None] | None = None
+    # Called with (listener, kind, action, node) when a side listener acts.
+    on_listener: Callable[[str, str, str, str], None] | None = None
+    # Hangs up (a listener ending the call); None: listeners can't end calls.
+    hang_up: Callable[[], Awaitable[None]] | None = None
+    # The LLM for side checks (promise to pay); None: those listeners stay quiet.
+    side_llm: llm.LLM | None = None
+    listeners: Listeners = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        self.listeners = Listeners(self)
 
     def variables(self) -> dict[str, str]:
         now = datetime.now(IST)
@@ -305,6 +319,28 @@ class _CheckedReplies:
         self.session.generate_reply(instructions=AMOUNT_RETRY)  # type: ignore[attr-defined]
 
 
+class _Listening:
+    """Hands the caller's finished turn to the side listeners (listeners.py)
+    before the AI answers; a listener may take over the turn (StopResponse)."""
+
+    state: CallState
+    node_id: str
+
+    async def on_user_turn_completed(self, turn_ctx: llm.ChatContext, new_message: llm.ChatMessage) -> None:
+        await self.state.listeners.on_turn(self, self.node_id, new_message)  # type: ignore[arg-type]
+
+
+def _listen_on(task: AgentTask, state: CallState, node_id: str) -> AgentTask:
+    """The same for LiveKit's ready-made questions (date of birth, name...),
+    which are created by LiveKit's classes rather than ours."""
+
+    async def on_user_turn_completed(turn_ctx: llm.ChatContext, new_message: llm.ChatMessage) -> None:
+        await state.listeners.on_turn(task, node_id, new_message)
+
+    task.on_user_turn_completed = on_user_turn_completed  # type: ignore[method-assign]
+    return task
+
+
 class _NodeMixin:
     """Shared behaviour: the greeting on the very first node, and logging."""
 
@@ -329,7 +365,7 @@ class _NodeMixin:
                 logger.exception("couldn't report the current step")
 
 
-class FlowAgent(_CheckedReplies, _NodeMixin, Agent):
+class FlowAgent(_Listening, _CheckedReplies, _NodeMixin, Agent):
     def __init__(
         self, state: CallState, node_id: str, node: AgentNode, chat_ctx: llm.ChatContext | None
     ) -> None:
@@ -446,7 +482,9 @@ class ApiAgent(_NodeMixin, Agent):
         )
 
     async def on_user_turn_completed(self, turn_ctx: llm.ChatContext, new_message: llm.ChatMessage) -> None:
-        # The call takes a moment; if the caller speaks meanwhile, the next step answers.
+        # The call takes a moment; if the caller speaks meanwhile, the next step answers
+        # (the listeners still hear it).
+        await self.state.listeners.on_turn(self, self.node_id, new_message)
         raise StopResponse()
 
     async def _run(self) -> tuple[bool, dict]:
@@ -486,7 +524,7 @@ class ApiAgent(_NodeMixin, Agent):
         self.session.update_agent(build_node_agent(self.state, target, _handoff_ctx(self)))
 
 
-class EndAgent(_CheckedReplies, _NodeMixin, Agent):
+class EndAgent(_Listening, _CheckedReplies, _NodeMixin, Agent):
     """Says the node's final words and hangs up, every time.
 
     Ending doesn't depend on the LLM deciding to call end_call: on entering the
@@ -526,7 +564,7 @@ RESUME_ASK = (
 )
 
 
-class ResumeAgent(_NodeMixin, Agent):
+class ResumeAgent(_Listening, _NodeMixin, Agent):
     """The first agent of a resumed call: asks "carry on or start over?"."""
 
     def __init__(self, state: CallState, point: ResumePoint) -> None:
@@ -569,7 +607,7 @@ def resume_agent(state: CallState, point: ResumePoint) -> Agent:
 # ── Collect node ──────────────────────────────────────────────────────────────
 
 
-class CustomFieldTask(_CheckedReplies, AgentTask[Any]):
+class CustomFieldTask(_Listening, _CheckedReplies, AgentTask[Any]):
     """Asks for one custom field and returns the caller's answer."""
 
     def __init__(self, state: CallState, node_id: str, f: CustomField, chat_ctx: llm.ChatContext | None) -> None:
@@ -685,7 +723,7 @@ def _result_value(f, result: Any) -> Any:
     return value.isoformat() if hasattr(value, "isoformat") else value
 
 
-class CollectAgent(_CheckedReplies, _NodeMixin, Agent):
+class CollectAgent(_Listening, _CheckedReplies, _NodeMixin, Agent):
     """Collects every field of a collect node, then hands off to its next node."""
 
     def __init__(self, state: CallState, node_id: str, node: CollectNode, chat_ctx: llm.ChatContext | None) -> None:
@@ -700,7 +738,7 @@ class CollectAgent(_CheckedReplies, _NodeMixin, Agent):
             ctx = self.chat_ctx.copy(exclude_instructions=True)
             if isinstance(f, CustomField):
                 return CustomFieldTask(self.state, self.node_id, f, ctx)
-            return _builtin_task(self.state, f, ctx)
+            return _listen_on(_builtin_task(self.state, f, ctx), self.state, self.node_id)
 
         return factory
 

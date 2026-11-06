@@ -94,7 +94,84 @@ export interface FlowSettings {
   resume?: { enabled?: boolean; keep?: string[] };
   reply_checks?: ReplyCheck[]; // on every step
   reply_check_line?: string;
+  /** Side listeners: act on what the caller says, alongside the conversation. */
+  listeners?: Listener[];
 }
+
+/** Side listeners (flow_engine/listeners.py). steps: the steps it listens on (empty: every step). */
+export type Listener =
+  | { kind: "secret_guard"; name: string; steps?: string[]; say?: string }
+  | {
+      kind: "keyword_watch";
+      name: string;
+      steps?: string[];
+      words: string[];
+      then: ListenerAction;
+      to?: string | null;
+      say?: string;
+      once?: boolean;
+    }
+  | { kind: "promise_to_pay"; name: string; steps?: string[]; save_date?: string; save_amount?: string };
+export type ListenerKind = Listener["kind"];
+export type ListenerAction = "go_to" | "say" | "flag" | "end_call";
+
+export const LISTENER_ACTIONS: { id: ListenerAction; label: string }[] = [
+  { id: "go_to", label: "Go to a step" },
+  { id: "say", label: "Say a line" },
+  { id: "flag", label: "Flag the call (the agent answers as usual)" },
+  { id: "end_call", label: "End the call" },
+];
+
+/** What "+ Add listener" offers: the kinds, and a ready-made fraud watch. */
+export const LISTENER_PRESETS: { id: string; label: string; about: string; make: (flow: Flow) => Listener }[] = [
+  {
+    id: "secret_guard",
+    label: "Secret guard",
+    about: "The caller starts reading out an OTP, PIN, CVV or card number: the agent warns them at once, and the AI never hears it.",
+    make: () => ({ kind: "secret_guard", name: "secret_guard" }),
+  },
+  {
+    id: "fraud_watch",
+    label: "Fraud watch",
+    about: "The caller mentions fraud or a payment they didn't make: go straight to the step you choose, from any step.",
+    make: (flow) => ({
+      kind: "keyword_watch",
+      name: "fraud_watch",
+      words: ["fraud", "without my OTP", "I didn't do this", "unauthorised", "धोखाधड़ी", "मैंने नहीं किया"],
+      then: "go_to",
+      // A conversation step that handles it, if the flow has an obvious one.
+      to: ["fraud", "fraud_help", "double_debit", "dispute", "callback"].find((id) => flow.nodes[id]?.type === "agent") ?? "",
+    }),
+  },
+  {
+    id: "keyword_watch",
+    label: "Keyword watch",
+    about: "Your own words or phrases: go to a step, say a line, flag the call or end it.",
+    make: () => ({ kind: "keyword_watch", name: "keyword_watch", words: [], then: "flag" }),
+  },
+  {
+    id: "promise_to_pay",
+    label: "Promise to pay",
+    about: "A small AI check after each thing the caller says: a promise to pay is kept as {{promised_date}} and {{promised_amount}}.",
+    make: () => ({ kind: "promise_to_pay", name: "promise_to_pay" }),
+  },
+];
+
+export const LISTENER_KIND_LABEL: Record<ListenerKind, string> = {
+  secret_guard: "Secret guard",
+  keyword_watch: "Keyword watch",
+  promise_to_pay: "Promise to pay",
+};
+
+/** What a listener did, as call history and test calls show it. */
+export const LISTENER_ACTION_TEXT: Record<string, string> = {
+  warned: "warned the caller not to share a code",
+  go_to: "took the caller to another step",
+  say: "said its line",
+  flag: "flagged the call",
+  end_call: "ended the call",
+  saved: "kept a promise to pay",
+};
 
 /** Checks on every sentence before the caller hears it (flow_engine/reply_checks.py). */
 export type ReplyCheck = "mask_long_numbers" | "amounts_from_tools" | "no_promises";
@@ -245,6 +322,18 @@ export function variablesOf(flow: Flow): { name: string; about: string }[] {
       for (const name of node.save ?? []) add(name, `from ${node.tool || "the API"} in ${id}`);
     }
   }
+  for (const ls of flow.settings?.listeners ?? []) {
+    if (ls.kind !== "promise_to_pay") continue;
+    for (const [name, about] of [
+      [ls.save_date || "promised_date", "the date the caller promised to pay (promise to pay)"],
+      [ls.save_amount || "promised_amount", "the amount the caller promised to pay (promise to pay)"],
+    ]) {
+      if (!seen.has(name)) {
+        seen.add(name);
+        out.push({ name, about });
+      }
+    }
+  }
   return out;
 }
 
@@ -292,7 +381,17 @@ export function renameNode(flow: Flow, oldId: string, newId: string): Flow {
       if (node.on_error === oldId) node.on_error = newId;
     }
   }
-  return { ...flow, nodes, start_node: flow.start_node === oldId ? newId : flow.start_node };
+  const settings = flow.settings?.listeners
+    ? {
+        ...flow.settings,
+        listeners: flow.settings.listeners.map((ls) => ({
+          ...ls,
+          ...(ls.steps ? { steps: ls.steps.map((s) => (s === oldId ? newId : s)) } : {}),
+          ...(ls.kind === "keyword_watch" && ls.to === oldId ? { to: newId } : {}),
+        })),
+      }
+    : flow.settings;
+  return { ...flow, nodes, settings, start_node: flow.start_node === oldId ? newId : flow.start_node };
 }
 
 /** Delete a node and the transitions into it. A collect step that led to it is
@@ -307,7 +406,18 @@ export function deleteNode(flow: Flow, id: string): Flow {
       nodes[nid] = { ...node, next: node.next === id ? "" : node.next, on_error: node.on_error === id ? "" : node.on_error };
     else nodes[nid] = node;
   }
-  return { ...flow, nodes };
+  // Listeners stop listening on it, unless it was their only step: then (as
+  // for a listener that went there) validation asks the editor what to do,
+  // rather than the listener quietly listening on every step.
+  const settings = flow.settings?.listeners
+    ? {
+        ...flow.settings,
+        listeners: flow.settings.listeners.map((ls) =>
+          ls.steps && ls.steps.length > 1 && ls.steps.includes(id) ? { ...ls, steps: ls.steps.filter((s) => s !== id) } : ls,
+        ),
+      }
+    : flow.settings;
+  return { ...flow, nodes, settings };
 }
 
 export interface ProblemsByPlace {

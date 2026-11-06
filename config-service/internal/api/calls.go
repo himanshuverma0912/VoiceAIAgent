@@ -9,6 +9,7 @@ import (
 	"slices"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/himanshuverma0912/VoiceAIAgent/config-service/internal/flowspec"
@@ -120,6 +121,26 @@ func checkCall(c *store.Call, now time.Time) []string {
 		}
 		if ch.Action != "fix" && ch.Action != "stop" {
 			bad("checks[%d].action: must be fix or stop", i)
+		}
+	}
+	if c.Listeners == nil {
+		c.Listeners = []store.CallListener{}
+	}
+	if len(c.Listeners) > 200 {
+		bad("listeners: at most 200")
+	}
+	for i, l := range c.Listeners {
+		if !identifierRE.MatchString(l.Listener) {
+			bad("listeners[%d].listener: not a listener name", i)
+		}
+		if !slices.Contains(flowspec.ListenerKinds, l.Kind) {
+			bad("listeners[%d].kind: not a listener kind", i)
+		}
+		if !slices.Contains(listenerActions, l.Action) {
+			bad("listeners[%d].action: must be one of %s", i, strings.Join(listenerActions, ", "))
+		}
+		if !identifierRE.MatchString(l.Node) {
+			bad("listeners[%d].node: not a node id", i)
 		}
 	}
 	between("turns.caller", c.Turns.Caller, 0, 10000)
@@ -271,6 +292,20 @@ type checkStats struct {
 	Steps   map[string]int `json:"steps"`   // times per step
 }
 
+// What a listener did on a call: a secret guard "warned"; a keyword watch
+// "go_to", "say", "flag" or "end_call"; a promise to pay "saved".
+var listenerActions = []string{"warned", "go_to", "say", "flag", "end_call", "saved"}
+
+// listenerStats: how often a side listener acted, and what it did.
+type listenerStats struct {
+	Listener string         `json:"listener"`
+	Kind     string         `json:"kind"`
+	Acted    int            `json:"acted"`   // times, over every call
+	Calls    int            `json:"calls"`   // calls where it acted at least once
+	Actions  map[string]int `json:"actions"` // times per action
+	Steps    map[string]int `json:"steps"`   // times per step
+}
+
 type versionStats struct {
 	Version       *int   `json:"version"` // null: a draft or the fallback file
 	Source        string `json:"source"`
@@ -298,6 +333,7 @@ type callSummary struct {
 	Steps     []stepStats      `json:"steps"`
 	Tools     []toolStats      `json:"tools"`
 	Checks    []checkStats     `json:"checks"`
+	Listeners []listenerStats  `json:"listeners"`
 	Resume    resumeStats      `json:"resume"`
 	Versions  []versionStats   `json:"versions"`
 	PerDay    []dayStats       `json:"per_day"`
@@ -352,6 +388,7 @@ func summarise(calls []store.Call, days int, channel string, now time.Time) call
 	toolMs := map[string][]int{}
 	toolFailed := map[string]int{}
 	checks := map[string]*checkStats{}
+	listeners := map[string]*listenerStats{}
 
 	for _, c := range calls {
 		out.Outcomes[c.Outcome]++
@@ -391,6 +428,23 @@ func summarise(calls []store.Call, days int, channel string, now time.Time) call
 			}
 			if !inCall[ch.Check] {
 				inCall[ch.Check] = true
+				st.Calls++
+			}
+		}
+
+		heardIn := map[string]bool{}
+		for _, l := range c.Listeners {
+			key := l.Listener + "/" + l.Kind
+			st := listeners[key]
+			if st == nil {
+				st = &listenerStats{Listener: l.Listener, Kind: l.Kind, Actions: map[string]int{}, Steps: map[string]int{}}
+				listeners[key] = st
+			}
+			st.Acted++
+			st.Actions[l.Action]++
+			st.Steps[l.Node]++
+			if !heardIn[key] {
+				heardIn[key] = true
 				st.Calls++
 			}
 		}
@@ -494,6 +548,17 @@ func summarise(calls []store.Call, days int, channel string, now time.Time) call
 			return out.Checks[i].Fired > out.Checks[j].Fired
 		}
 		return out.Checks[i].Check < out.Checks[j].Check
+	})
+
+	out.Listeners = []listenerStats{}
+	for _, st := range listeners {
+		out.Listeners = append(out.Listeners, *st)
+	}
+	sort.Slice(out.Listeners, func(i, j int) bool {
+		if out.Listeners[i].Acted != out.Listeners[j].Acted {
+			return out.Listeners[i].Acted > out.Listeners[j].Acted
+		}
+		return out.Listeners[i].Listener < out.Listeners[j].Listener
 	})
 
 	out.Versions = []versionStats{}

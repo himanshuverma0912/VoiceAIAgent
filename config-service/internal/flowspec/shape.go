@@ -32,6 +32,20 @@ var (
 // caller hears it (flow_engine/reply_checks.py; the same list as spec.REPLY_CHECKS).
 var ReplyChecks = []string{"mask_long_numbers", "amounts_from_tools", "no_promises"}
 
+// ListenerKinds are the side listeners a flow can have (flow_engine/listeners.py;
+// the same list as spec.LISTENER_KINDS), and ListenerActions what a keyword
+// watch can do.
+var (
+	ListenerKinds   = []string{"secret_guard", "keyword_watch", "promise_to_pay"}
+	ListenerActions = []string{"go_to", "say", "flag", "end_call"}
+)
+
+// Limits on a keyword watch's words (spec.MAX_LISTENER_WORDS, MAX_LISTENER_WORD_LENGTH).
+const (
+	MaxListenerWords      = 50
+	MaxListenerWordLength = 80
+)
+
 // BuiltinFields are the field types a collect node can ask for without a description.
 var BuiltinFields = []string{"name", "phone", "email", "address", "date_of_birth", "digits"}
 
@@ -43,12 +57,28 @@ type Flow struct {
 	Guardrails           []string
 	Greeting             string
 	AllowEndCallAnywhere bool
-	ResumeKeep           []string  // settings.resume.keep: values kept for a resumed call
-	ReplyChecks          []string  // settings.reply_checks: on every step
-	ReplyCheckLine       string    // settings.reply_check_line
-	Tools                []ToolUse // offered on every agent step
+	ResumeKeep           []string   // settings.resume.keep: values kept for a resumed call
+	ReplyChecks          []string   // settings.reply_checks: on every step
+	ReplyCheckLine       string     // settings.reply_check_line
+	Listeners            []Listener // settings.listeners
+	Tools                []ToolUse  // offered on every agent step
 	StartNode            string
 	Nodes                []*Node // in file order
+}
+
+// Listener is a side listener (settings.listeners): "secret_guard",
+// "keyword_watch" or "promise_to_pay".
+type Listener struct {
+	Kind       string
+	Name       string
+	Steps      []string
+	Say        string   // secret_guard, keyword_watch
+	Words      []string // keyword_watch
+	Then       string   // keyword_watch
+	To         string   // keyword_watch, then "go_to"
+	HasTo      bool
+	SaveDate   string // promise_to_pay
+	SaveAmount string // promise_to_pay
 }
 
 // Node is one step of a flow: type "agent", "collect", "api" or "end".
@@ -388,7 +418,7 @@ func (s *shape) flow(v any) *Flow {
 		f.AllowEndCallAnywhere, _ = s.boolean("allow_end_call_anywhere", v)
 	}
 	if v, ok := s.field("", o, "settings", false); ok {
-		f.ResumeKeep, f.ReplyChecks, f.ReplyCheckLine = s.settings(v)
+		f.ResumeKeep, f.ReplyChecks, f.ReplyCheckLine, f.Listeners = s.settings(v)
 	}
 	if v, ok := o.Get("tools"); ok {
 		f.Tools = s.toolUses("tools", v)
@@ -408,12 +438,12 @@ func (s *shape) flow(v any) *Flow {
 	return f
 }
 
-func (s *shape) settings(v any) (resumeKeep, checks []string, line string) {
+func (s *shape) settings(v any) (resumeKeep, checks []string, line string, listeners []Listener) {
 	const loc = "settings"
 	o, ok := s.model(loc, v, "FlowSettings", "language", "llm_model", "llm_temperature", "stt_model", "tts_voice_id", "resume",
-		"reply_checks", "reply_check_line")
+		"reply_checks", "reply_check_line", "listeners")
 	if !ok {
-		return nil, nil, ""
+		return nil, nil, "", nil
 	}
 	if v, ok := o.Get("language"); ok {
 		if lang, ok := s.str(at(loc, "language"), v, false); ok && !languageRE.MatchString(lang) {
@@ -435,7 +465,93 @@ func (s *shape) settings(v any) (resumeKeep, checks []string, line string) {
 	if v, ok := o.Get("reply_check_line"); ok {
 		line, _ = s.str(at(loc, "reply_check_line"), v, false)
 	}
-	return resumeKeep, checks, line
+	if v, ok := o.Get("listeners"); ok {
+		if items, ok := s.list(at(loc, "listeners"), v, false); ok {
+			for i, item := range items {
+				if l, ok := s.listener(idx(at(loc, "listeners"), i), item); ok {
+					listeners = append(listeners, l)
+				}
+			}
+		}
+	}
+	return resumeKeep, checks, line, listeners
+}
+
+// listener checks one side listener; "kind" picks its shape, like a node's "type".
+func (s *shape) listener(loc string, v any) (Listener, bool) {
+	var l Listener
+	o, ok := v.(*Object)
+	if !ok {
+		s.add(loc, "Input should be a valid dictionary or object to extract fields from")
+		return l, false
+	}
+	kind, ok := o.Get("kind")
+	if !ok {
+		s.add(loc, "Unable to extract tag using discriminator 'kind'")
+		return l, false
+	}
+	switch kind {
+	case "secret_guard":
+		s.extraKeys(loc, o, "kind", "name", "steps", "say")
+	case "keyword_watch":
+		s.extraKeys(loc, o, "kind", "name", "steps", "words", "then", "to", "say", "once")
+	case "promise_to_pay":
+		s.extraKeys(loc, o, "kind", "name", "steps", "save_date", "save_amount")
+	default:
+		s.add(loc, fmt.Sprintf("unknown listener kind '%s'; use 'secret_guard', 'keyword_watch' or 'promise_to_pay'", pyStr(kind)))
+		return l, false
+	}
+	l.Kind = kind.(string)
+	if v, ok := s.field(loc, o, "name", true); ok {
+		l.Name, _ = s.identifier(at(loc, "name"), v)
+	}
+	if v, ok := o.Get("steps"); ok {
+		if items, ok := s.list(at(loc, "steps"), v, false); ok {
+			for i, item := range items {
+				if step, ok := s.identifier(idx(at(loc, "steps"), i), item); ok {
+					l.Steps = append(l.Steps, step)
+				}
+			}
+		}
+	}
+	switch l.Kind {
+	case "secret_guard":
+		if v, ok := o.Get("say"); ok {
+			l.Say, _ = s.str(at(loc, "say"), v, false)
+		}
+	case "keyword_watch":
+		if v, ok := s.field(loc, o, "words", true); ok {
+			if items, ok := s.list(at(loc, "words"), v, true); ok {
+				for i, item := range items {
+					if w, ok := s.str(idx(at(loc, "words"), i), item, false); ok {
+						l.Words = append(l.Words, w)
+					}
+				}
+			}
+		}
+		if v, ok := s.field(loc, o, "then", true); ok {
+			l.Then, _ = s.literal(at(loc, "then"), v, ListenerActions...)
+		}
+		if v, ok := o.Get("to"); ok && v != nil {
+			l.To, _ = s.identifier(at(loc, "to"), v)
+			l.HasTo = true
+		}
+		if v, ok := o.Get("say"); ok {
+			l.Say, _ = s.str(at(loc, "say"), v, false)
+		}
+		if v, ok := o.Get("once"); ok {
+			s.boolean(at(loc, "once"), v)
+		}
+	case "promise_to_pay":
+		l.SaveDate, l.SaveAmount = "promised_date", "promised_amount"
+		if v, ok := o.Get("save_date"); ok {
+			l.SaveDate, _ = s.identifier(at(loc, "save_date"), v)
+		}
+		if v, ok := o.Get("save_amount"); ok {
+			l.SaveAmount, _ = s.identifier(at(loc, "save_amount"), v)
+		}
+	}
+	return l, true
 }
 
 // replyChecks checks a list of reply check names.

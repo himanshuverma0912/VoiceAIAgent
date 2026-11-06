@@ -7,6 +7,9 @@ What a record holds, and nothing else:
   - the tools it used (bank API, MCP server): which, whether each worked, how long
   - the reply checks that changed or stopped what the agent was about to say:
     which check, on which step, and whether it fixed or stopped the sentence
+  - the side listeners that acted: which listener, on which step, and what it
+    did (warned, went to a step, said a line, flagged, ended the call, saved a
+    promise); never what was said or what was saved
   - how it ended (completed, caller hung up, ended early, time limit, error)
   - whether it picked up from a dropped call, and whether it left a resume
     point for the caller to pick up from (never where, or what was kept)
@@ -70,6 +73,7 @@ class CallRecorder:
         self._steps: list[tuple[str, float]] = []
         self._tools: list[dict] = []
         self._checks: list[dict] = []
+        self._listeners: list[dict] = []
         self._caller_turns = 0
         self._agent_turns = 0
         self._latencies: list[float] = []
@@ -102,6 +106,11 @@ class CallRecorder:
         """A reply check fired: its name, the step, "fix" or "stop" (never the sentence)."""
         if len(self._checks) < 200:
             self._checks.append({"check": check, "node": node, "action": action})
+
+    def listener(self, listener: str, kind: str, action: str, node: str) -> None:
+        """A side listener acted: which, its kind, what it did, the step (never what was said)."""
+        if len(self._listeners) < 200:
+            self._listeners.append({"listener": listener, "kind": kind, "action": action, "node": node})
 
     def agent_ended_call(self) -> None:
         self._agent_ended = True
@@ -184,6 +193,8 @@ class CallRecorder:
         # reply checks).
         if self._checks:
             record["checks"] = list(self._checks)
+        if self._listeners:
+            record["listeners"] = list(self._listeners)
         return record
 
 

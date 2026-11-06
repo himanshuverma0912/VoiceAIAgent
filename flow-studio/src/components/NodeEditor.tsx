@@ -4,6 +4,7 @@ import {
   BUILTINS,
   IDENTIFIER_HINT,
   IDENTIFIER_RE,
+  LISTENER_KIND_LABEL,
   NODE_TYPE_LABEL,
   VALUE_TYPES,
   problemText,
@@ -81,6 +82,39 @@ export function NodeEditor(p: Props) {
       {p.node.type === "collect" && <CollectForm {...p} node={p.node} otherIds={otherIds} />}
       {p.node.type === "api" && <ApiForm {...p} node={p.node} otherIds={otherIds} />}
       {p.node.type === "end" && <EndForm {...p} node={p.node} />}
+      <StepListeners flow={p.flow} id={p.id} />
+    </div>
+  );
+}
+
+/** The side listeners that listen on this step, or can bring the caller here (edited in Settings). */
+function StepListeners(props: { flow: Flow; id: string }) {
+  const all = props.flow.settings?.listeners ?? [];
+  const here = all.filter((ls) => !ls.steps?.length || ls.steps.includes(props.id));
+  const jumpIn = all.filter((ls) => ls.kind === "keyword_watch" && ls.then === "go_to" && ls.to === props.id);
+  if (!here.length && !jumpIn.length) return null;
+  return (
+    <div className="section">
+      <h3 style={{ marginBottom: 6 }}>Side listeners</h3>
+      {here.length > 0 && (
+        <p className="hint" style={{ marginTop: 0 }}>
+          Listening here:{" "}
+          {here.map((ls, i) => (
+            <span key={ls.name}>
+              {i > 0 && ", "}
+              <strong>{ls.name}</strong> ({LISTENER_KIND_LABEL[ls.kind]}
+              {ls.steps?.length ? "" : ", every step"})
+            </span>
+          ))}
+          .
+        </p>
+      )}
+      {jumpIn.length > 0 && (
+        <p className="hint">
+          Can bring the caller here from other steps: {jumpIn.map((ls) => ls.name).join(", ")}.
+        </p>
+      )}
+      <p className="hint">Change them in Settings → Side listeners.</p>
     </div>
   );
 }
