@@ -15,6 +15,7 @@ import {
   deleteNode,
   groupProblems,
   isEditable,
+  listenerJumpWarnings,
   newNode,
   problemText,
   renameNode,
@@ -295,6 +296,8 @@ export function FlowEditor({ me, flowId }: { me: Me; flowId: string }) {
   // ── derived ──
   const grouped = useMemo(() => groupProblems(problems, flow ? Object.keys(flow.nodes) : []), [problems, flow]);
   const vars = useMemo(() => (flow ? variablesOf(flow) : []), [flow]);
+  // Not problems (the flow still saves and publishes): things worth a second look.
+  const warnings = useMemo(() => (flow ? listenerJumpWarnings(flow) : []), [flow]);
   const selectedNode = selection.kind === "node" && flow?.nodes[selection.id] ? selection : null;
   const tools = useMemo(
     () => (integrations === null || !summary ? null : offeredTools(integrations, summary.workspace)),
@@ -339,6 +342,16 @@ export function FlowEditor({ me, flowId }: { me: Me; flowId: string }) {
           </button>
         ) : (
           <span className="chip good">no problems</span>
+        )}
+        {warnings.length > 0 && (
+          <button
+            className="small"
+            style={{ color: "var(--warn)", borderColor: "var(--warn)" }}
+            title={warnings.map((w) => w.text).join("\n\n")}
+            onClick={() => setSelection({ kind: "settings" })}
+          >
+            {warnings.length} warning{warnings.length === 1 ? "" : "s"}
+          </button>
         )}
         <span className="spacer" />
         <div className="tabs" role="group" aria-label="View">
@@ -496,6 +509,11 @@ export function FlowEditor({ me, flowId }: { me: Me; flowId: string }) {
               ) : (
                 !jsonError && <div className="notice info">No problems.</div>
               )}
+              {warnings.map((w) => (
+                <div key={w.listener} className="notice warn">
+                  <strong>settings.listeners[{w.listener}]</strong>: {w.text}
+                </div>
+              ))}
             </div>
           ) : flow && selectedNode ? (
             <NodeEditor

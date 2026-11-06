@@ -14,6 +14,14 @@ and act when they hear something (flow format: settings.listeners, spec.py).
                     whether it was a promise to pay; if so the date and amount
                     are kept as variables (e.g. {{promised_date}}). It runs on
                     the side: the agent's reply doesn't wait for it.
+    time_limit      A clock for the whole call: a few minutes before the limit
+                    the agent tells the caller time is nearly up; at the limit
+                    it ends the call politely, or goes to a step (a call-back
+                    booking, say) and ends a few minutes after that.
+    off_topic       After each thing the caller says, a small AI check asks
+                    whether it was about the call. After a few off-topic turns
+                    in a row the agent politely brings them back; if it goes on,
+                    it ends the call, goes to a step or flags the call.
 
 Each listener runs on every step, or only on the steps it lists. Nothing is
 logged or reported except the listener's name, what it did and the step:
@@ -39,7 +47,7 @@ from zoneinfo import ZoneInfo
 
 from livekit.agents import StopResponse, llm
 
-from .spec import KeywordWatch, PromiseToPay, SecretGuard
+from .spec import KeywordWatch, OffTopic, PromiseToPay, SecretGuard, TimeLimit
 
 if TYPE_CHECKING:
     from livekit.agents import Agent, AgentSession
@@ -183,6 +191,43 @@ async def ask_llm(model: llm.LLM, system: str, user: str, timeout: float = PROMI
     return await asyncio.wait_for(run(), timeout)
 
 
+# ── Time limit ───────────────────────────────────────────────────────────────
+
+# To the AI: tell the caller, in their language and its own words.
+TIME_WARNING = (
+    "This call has to end in about {minutes} minute{s}. In one short, polite sentence tell the caller, and help "
+    "them finish what they need. Don't mention it again."
+)
+TIME_UP = (
+    "We've reached the time limit for this call. Thank you for calling, and please call again if you need more help. Goodbye.",
+    "इस कॉल का समय पूरा हो गया है। कॉल करने के लिए धन्यवाद, और मदद चाहिए तो दोबारा कॉल करें। नमस्ते।",
+)
+
+# ── Off topic ────────────────────────────────────────────────────────────────
+
+OFF_TOPIC_PROMPT = """You check one thing a caller said on a phone helpline: was it about the call?
+The call is about: {topic}
+Right now the agent is doing this: {step}
+The agent had just said: "{agent}"
+About the call: answering the agent; questions, details or worries about their account, loan, payment or
+this call; greetings, thanks, "wait", "hello?", asking to repeat, short replies.
+Off topic: chatting about unrelated things (sport, politics, films, jokes, other people's stories), or
+going on about something that doesn't help the call. Give the caller the benefit of the doubt.
+Answer with JSON only, no other text:
+{{"off_topic": true or false}}"""
+
+# To the AI: bring the caller back, briefly and politely.
+STEER = (
+    "The caller keeps talking about things that have nothing to do with this call. In one or two short, polite "
+    "sentences bring them back: say what you can help with on this call, and ask your current question again. "
+    "Don't lecture them."
+)
+OFF_TOPIC_END = (
+    "I'm sorry, on this call we can only help with what it's for. Please call us again when you need that. Goodbye.",
+    "माफ़ कीजिए, इस कॉल पर हम सिर्फ़ इसी काम में मदद कर सकते हैं। ज़रूरत हो तो दोबारा कॉल करें। नमस्ते।",
+)
+
+
 # ── The listeners of one call ────────────────────────────────────────────────
 
 Report = Callable[[str, str, str, str], None]  # (listener, kind, action, node)
@@ -193,6 +238,8 @@ class Listeners:
     each time, so a flow without listeners costs nothing."""
 
     WARN_AGAIN_AFTER = 8.0  # seconds: one warning covers one attempt to read a code out
+    SECONDS_PER_MINUTE = 60.0  # the time limit's clock (tests make it fast)
+    GRACE_MINUTES = 3  # after a time limit's "go_to", the call still ends this much later
 
     def __init__(self, state: CallState) -> None:
         self.state = state
@@ -201,11 +248,18 @@ class Listeners:
         self._warned_at = -1e9
         self._follow_up_owed = False
         self._tasks: set[asyncio.Task] = set()
+        self._off_topic_run = 0  # off-topic turns in a row
 
     # ── which listeners apply ──
 
     def _on(self, node_id: str) -> list:
-        return [ls for ls in self.state.flow.settings.listeners if not ls.steps or node_id in ls.steps]
+        """The listeners on a step (a time limit has no steps: it's for the whole call)."""
+        out = []
+        for ls in self.state.flow.settings.listeners:
+            steps = getattr(ls, "steps", None)
+            if steps is not None and (not steps or node_id in steps):
+                out.append(ls)
+        return out
 
     def _current_node(self) -> str:
         return self.state.path[-1] if self.state.path else self.state.flow.start_node
@@ -236,6 +290,9 @@ class Listeners:
             return
         session.on("user_input_transcribed", self._on_transcript)
         session.on("conversation_item_added", self._on_item)
+        for ls in self.state.flow.settings.listeners:
+            if isinstance(ls, TimeLimit):
+                self._spawn(self._clock(ls))
 
     def _on_transcript(self, ev: Any) -> None:
         guard = self._guard(self._current_node())
@@ -250,6 +307,8 @@ class Listeners:
         for ls in self._on(node_id):
             if isinstance(ls, PromiseToPay):
                 self._spawn(self._check_promise(ls, item.text_content or "", node_id))
+            elif isinstance(ls, OffTopic):
+                self._spawn(self._check_topic(ls, item.text_content or "", node_id))
 
     # ── the end of the caller's turn ──
 
@@ -360,15 +419,9 @@ class Listeners:
         model = self.state.side_llm
         if model is None or not said.strip():
             return
-        agent_said = ""
-        if self.session is not None:
-            for item in reversed(self.session.history.items):
-                if item.type == "message" and item.role == "assistant":
-                    agent_said = (item.text_content or "")[-300:]
-                    break
         today = datetime.now(IST).strftime("%A, %d %B %Y")
         try:
-            answer = await ask_llm(model, PROMISE_PROMPT.format(today=today, agent=agent_said), mask_text(said))
+            answer = await ask_llm(model, PROMISE_PROMPT.format(today=today, agent=self._agent_said()), mask_text(said))
         except Exception:  # a side check must never affect the call
             logger.warning("promise check failed", extra={"listener": ls.name, "node": node_id})
             return
@@ -384,6 +437,119 @@ class Listeners:
         if amount is not None:
             self.state.values[ls.save_amount] = amount
         self._report(ls, "saved", node_id)
+
+    # ── time limit ──
+
+    async def _clock(self, ls: TimeLimit) -> None:
+        unit = self.SECONDS_PER_MINUTE
+        if ls.warn_minutes:
+            await asyncio.sleep((ls.minutes - ls.warn_minutes) * unit)
+            self._time_warning(ls)
+            await asyncio.sleep(ls.warn_minutes * unit)
+        else:
+            await asyncio.sleep(ls.minutes * unit)
+        await self._time_up(ls)
+
+    def _live(self) -> bool:
+        return self.session is not None and not self.session._is_closing()
+
+    def _time_warning(self, ls: TimeLimit) -> None:
+        if not self._live():
+            return
+        self._report(ls, "time_warning", self._current_node())
+        if ls.warn_say.strip():
+            self.session.say(self.state.render(ls.warn_say))  # type: ignore[union-attr]
+        else:
+            n = ls.warn_minutes
+            self.session.generate_reply(instructions=TIME_WARNING.format(minutes=n, s="" if n == 1 else "s"))  # type: ignore[union-attr]
+
+    async def _time_up(self, ls: TimeLimit) -> None:
+        if not self._live():
+            return
+        line = self.state.render(ls.say).strip() if ls.say else ""
+        if ls.then == "go_to" and ls.to:
+            self._go_to(ls, ls.to, line)
+            await asyncio.sleep(self.GRACE_MINUTES * self.SECONDS_PER_MINUTE)
+            if not self._live():
+                return
+            line = ""
+        await self._end(ls, line or TIME_UP[self._hindi])
+
+    # ── off topic ──
+
+    async def _check_topic(self, ls: OffTopic, said: str, node_id: str) -> None:
+        model = self.state.side_llm
+        if model is None or not said.strip():
+            return
+        if len(said.split()) <= 2:  # "ok", "haan ji", "hello?": part of the call, no check needed
+            self._off_topic_run = 0
+            return
+        flow = self.state.flow
+        topic = ls.topic.strip() or f"{flow.name}. The agent: {flow.persona.strip()[:300]}"
+        node = flow.nodes.get(node_id)
+        step = (getattr(node, "instructions", "") or "").strip()[:300] or "calling one of the bank's systems"
+        prompt = OFF_TOPIC_PROMPT.format(topic=topic, step=step, agent=self._agent_said())
+        try:
+            answer = await ask_llm(model, prompt, mask_text(said))
+        except Exception:  # a side check must never affect the call
+            logger.warning("off-topic check failed", extra={"listener": ls.name, "node": node_id})
+            return
+        data = _json_object(answer)
+        if not data or data.get("off_topic") is not True:
+            self._off_topic_run = 0
+            return
+        self._off_topic_run += 1
+        run = self._off_topic_run
+        if not self._live():
+            return
+        if ls.then_after and run >= ls.then_after:
+            self._off_topic_run = 0
+            line = self.state.render(ls.say).strip() if ls.say else ""
+            if ls.then == "flag":
+                self._report(ls, "flag", node_id)
+            elif ls.then == "go_to" and ls.to:
+                self._go_to(ls, ls.to, line)
+            else:
+                await self._end(ls, line or OFF_TOPIC_END[self._hindi])
+        elif run % ls.steer_after == 0:
+            self._report(ls, "steered", node_id)
+            self.session.interrupt()  # type: ignore[union-attr]  # not an answer to the off-topic talk, then this
+            self.session.generate_reply(instructions=STEER)  # type: ignore[union-attr]
+
+    # ── shared: go to a step, end the call ──
+
+    def _agent_said(self) -> str:
+        if self.session is not None:
+            for item in reversed(self.session.history.items):
+                if item.type == "message" and item.role == "assistant":
+                    return (item.text_content or "")[-300:]
+        return ""
+
+    def _go_to(self, ls, to: str, line: str) -> None:
+        """Move the call to another step from outside a turn (time limit, off topic)."""
+        from .runtime import build_node_agent  # runtime imports this module
+
+        session = self.session
+        if session is None or to not in self.state.flow.nodes:
+            return
+        node_id = self._current_node()
+        self._report(ls, "go_to", node_id)
+        logger.info("flow transition", extra={"from": node_id, "to": to, "listener": ls.name})
+        session.interrupt()
+        ctx = session.current_agent.chat_ctx.copy(exclude_instructions=True)
+        if line:
+            session.say(line)
+        session.update_agent(build_node_agent(self.state, to, ctx))
+
+    async def _end(self, ls, line: str) -> None:
+        """Say a last line, then hang up."""
+        session = self.session
+        if session is None:
+            return
+        self._report(ls, "end_call", self._current_node())
+        session.interrupt()
+        handle = session.say(line, allow_interruptions=False)
+        await self._hang_up_after(handle)
 
     async def aclose(self) -> None:
         for task in list(self._tasks):

@@ -36,7 +36,7 @@ var ReplyChecks = []string{"mask_long_numbers", "amounts_from_tools", "no_promis
 // the same list as spec.LISTENER_KINDS), and ListenerActions what a keyword
 // watch can do.
 var (
-	ListenerKinds   = []string{"secret_guard", "keyword_watch", "promise_to_pay"}
+	ListenerKinds   = []string{"secret_guard", "keyword_watch", "promise_to_pay", "time_limit", "off_topic"}
 	ListenerActions = []string{"go_to", "say", "flag", "end_call"}
 )
 
@@ -79,6 +79,11 @@ type Listener struct {
 	HasTo      bool
 	SaveDate   string // promise_to_pay
 	SaveAmount string // promise_to_pay
+
+	Minutes, WarnMinutes  int64  // time_limit
+	WarnSay               string // time_limit
+	SteerAfter, ThenAfter int64  // off_topic
+	Topic                 string // off_topic
 }
 
 // Node is one step of a flow: type "agent", "collect", "api" or "end".
@@ -254,7 +259,8 @@ func (s *shape) literal(loc string, v any, allowed ...string) (string, bool) {
 }
 
 // integer checks v is a whole JSON number (not 4.0, not "4") within [lo, hi].
-func (s *shape) integer(loc string, v any, lo, hi int64) {
+// integer checks v is a whole JSON number within [lo, hi], and returns it.
+func (s *shape) integer(loc string, v any, lo, hi int64) (int64, bool) {
 	n, ok := v.(json.Number)
 	var value *big.Int
 	if ok {
@@ -262,13 +268,16 @@ func (s *shape) integer(loc string, v any, lo, hi int64) {
 	}
 	if !ok {
 		s.add(loc, "Input should be a valid integer")
-		return
+		return 0, false
 	}
 	if value.Cmp(big.NewInt(lo)) < 0 {
 		s.add(loc, fmt.Sprintf("Input should be greater than or equal to %d", lo))
+		return 0, false
 	} else if value.Cmp(big.NewInt(hi)) > 0 {
 		s.add(loc, fmt.Sprintf("Input should be less than or equal to %d", hi))
+		return 0, false
 	}
+	return value.Int64(), true
 }
 
 // number checks v is a JSON number (whole or decimal) within [lo, hi].
@@ -497,8 +506,12 @@ func (s *shape) listener(loc string, v any) (Listener, bool) {
 		s.extraKeys(loc, o, "kind", "name", "steps", "words", "then", "to", "say", "once")
 	case "promise_to_pay":
 		s.extraKeys(loc, o, "kind", "name", "steps", "save_date", "save_amount")
+	case "time_limit":
+		s.extraKeys(loc, o, "kind", "name", "minutes", "warn_minutes", "warn_say", "then", "to", "say")
+	case "off_topic":
+		s.extraKeys(loc, o, "kind", "name", "steps", "topic", "steer_after", "then_after", "then", "to", "say")
 	default:
-		s.add(loc, fmt.Sprintf("unknown listener kind '%s'; use 'secret_guard', 'keyword_watch' or 'promise_to_pay'", pyStr(kind)))
+		s.add(loc, fmt.Sprintf("unknown listener kind '%s'; use %s", pyStr(kind), listenerKindList))
 		return l, false
 	}
 	l.Kind = kind.(string)
@@ -550,9 +563,49 @@ func (s *shape) listener(loc string, v any) (Listener, bool) {
 		if v, ok := o.Get("save_amount"); ok {
 			l.SaveAmount, _ = s.identifier(at(loc, "save_amount"), v)
 		}
+	case "time_limit":
+		l.Minutes, l.WarnMinutes, l.Then = 30, 2, "end_call"
+		if v, ok := o.Get("minutes"); ok {
+			l.Minutes, _ = s.integer(at(loc, "minutes"), v, 1, 240)
+		}
+		if v, ok := o.Get("warn_minutes"); ok {
+			l.WarnMinutes, _ = s.integer(at(loc, "warn_minutes"), v, 0, 60)
+		}
+		if v, ok := o.Get("warn_say"); ok {
+			l.WarnSay, _ = s.str(at(loc, "warn_say"), v, false)
+		}
+		s.listenerAction(loc, o, &l, "end_call", "go_to")
+	case "off_topic":
+		l.SteerAfter, l.ThenAfter, l.Then = 2, 4, "end_call"
+		if v, ok := o.Get("topic"); ok {
+			l.Topic, _ = s.str(at(loc, "topic"), v, false)
+		}
+		if v, ok := o.Get("steer_after"); ok {
+			l.SteerAfter, _ = s.integer(at(loc, "steer_after"), v, 1, 10)
+		}
+		if v, ok := o.Get("then_after"); ok {
+			l.ThenAfter, _ = s.integer(at(loc, "then_after"), v, 0, 20)
+		}
+		s.listenerAction(loc, o, &l, "end_call", "go_to", "flag")
 	}
 	return l, true
 }
+
+// listenerAction reads "then" (with a default), "to" and "say" of a time limit or an off-topic guard.
+func (s *shape) listenerAction(loc string, o *Object, l *Listener, actions ...string) {
+	if v, ok := o.Get("then"); ok {
+		l.Then, _ = s.literal(at(loc, "then"), v, actions...)
+	}
+	if v, ok := o.Get("to"); ok && v != nil {
+		l.To, _ = s.identifier(at(loc, "to"), v)
+		l.HasTo = true
+	}
+	if v, ok := o.Get("say"); ok {
+		l.Say, _ = s.str(at(loc, "say"), v, false)
+	}
+}
+
+const listenerKindList = "'secret_guard', 'keyword_watch', 'promise_to_pay', 'time_limit' or 'off_topic'"
 
 // replyChecks checks a list of reply check names.
 func (s *shape) replyChecks(loc string, v any) []string {

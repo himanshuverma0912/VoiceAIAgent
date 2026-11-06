@@ -35,9 +35,14 @@ function listenersOf(flow: unknown): Record<string, Listener> {
 function describeListener(l: Listener): string {
   const kind = LISTENER_KIND_LABEL[l.kind] ?? l.kind;
   const steps = l.steps?.length ? ` on ${l.steps.join(", ")}` : " on every step";
-  if (l.kind === "keyword_watch") {
-    const then = l.then === "go_to" ? `go to ${l.to}` : l.then === "end_call" ? "end the call" : l.then === "say" ? "say a line" : "flag the call";
-    return `${kind} ${l.name}${steps}: “${(l.words ?? []).join("”, “")}” → ${then}`;
+  const thenText = (then?: string, to?: string | null) =>
+    then === "go_to" ? `go to ${to}` : then === "say" ? "say a line" : then === "flag" ? "flag the call" : "end the call";
+  if (l.kind === "keyword_watch") return `${kind} ${l.name}${steps}: “${(l.words ?? []).join("”, “")}” → ${thenText(l.then, l.to)}`;
+  if (l.kind === "time_limit")
+    return `${kind} ${l.name}: ${l.minutes ?? 30} minutes (warning ${l.warn_minutes ?? 2} before) → ${thenText(l.then, l.to)}`;
+  if (l.kind === "off_topic") {
+    const after = l.then_after ?? 4;
+    return `${kind} ${l.name}${steps}: brings the caller back after ${l.steer_after ?? 2} off-topic turns${after ? `, after ${after} → ${thenText(l.then, l.to)}` : ""}`;
   }
   return `${kind} ${l.name}${steps}`;
 }

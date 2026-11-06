@@ -7,6 +7,8 @@ import {
   LISTENER_ACTIONS,
   LISTENER_KIND_LABEL,
   LISTENER_PRESETS,
+  ONE_PER_FLOW,
+  listenerJumpWarnings,
   uniqueId,
   type Flow,
   type Listener,
@@ -28,6 +30,7 @@ export function Listeners(props: {
   const listeners = props.flow.settings?.listeners ?? [];
   const nodeIds = Object.keys(props.flow.nodes);
   const hindi = (props.flow.settings?.language ?? "hi").startsWith("hi");
+  const warnings = listenerJumpWarnings(props.flow);
   const set = (i: number, next: Listener) => props.change(listeners.map((l, j) => (j === i ? next : l)));
   const remove = (i: number) => props.change(listeners.filter((_, j) => j !== i));
   const add = (presetId: string) => {
@@ -37,10 +40,8 @@ export function Listeners(props: {
     made.name = uniqueId(made.name, listeners.map((l) => l.name));
     props.change([...listeners, made]);
   };
-  // One secret guard and one promise to pay per flow.
-  const offered = LISTENER_PRESETS.filter(
-    (p) => !((p.id === "secret_guard" || p.id === "promise_to_pay") && listeners.some((l) => l.kind === p.id)),
-  );
+  // One of each kind per flow, keyword watches apart.
+  const offered = LISTENER_PRESETS.filter((p) => !(ONE_PER_FLOW.includes(p.id as never) && listeners.some((l) => l.kind === p.id)));
 
   return (
     <div className="listeners">
@@ -58,7 +59,7 @@ export function Listeners(props: {
           <Field label="Name" hint={`Shown in test calls and call history; ${IDENTIFIER_HINT}.`}>
             <input className="mono" value={ls.name} disabled={!props.editable} onChange={(e) => set(i, { ...ls, name: e.target.value.trim() })} />
           </Field>
-          <Steps listener={ls} nodeIds={nodeIds} editable={props.editable} change={(next) => set(i, next)} />
+          {ls.kind !== "time_limit" && <Steps listener={ls} nodeIds={nodeIds} editable={props.editable} change={(next) => set(i, next)} />}
           {ls.kind === "secret_guard" && (
             <Field label="Warning (optional)" hint={`Empty: “${hindi ? DEFAULT_WARNING.hi : DEFAULT_WARNING.en}”`}>
               <VarText
@@ -72,6 +73,12 @@ export function Listeners(props: {
           )}
           {ls.kind === "keyword_watch" && (
             <KeywordWatch listener={ls} nodeIds={nodeIds} vars={props.vars} editable={props.editable} change={(next) => set(i, next)} />
+          )}
+          {ls.kind === "time_limit" && (
+            <TimeLimitForm listener={ls} nodeIds={nodeIds} vars={props.vars} editable={props.editable} hindi={hindi} change={(next) => set(i, next)} />
+          )}
+          {ls.kind === "off_topic" && (
+            <OffTopicForm listener={ls} nodeIds={nodeIds} vars={props.vars} editable={props.editable} hindi={hindi} change={(next) => set(i, next)} />
           )}
           {ls.kind === "promise_to_pay" && (
             <>
@@ -99,6 +106,13 @@ export function Listeners(props: {
               </p>
             </>
           )}
+          {warnings
+            .filter((w) => w.listener === i)
+            .map((w) => (
+              <div key={w.to} className="notice warn" role="note">
+                {w.text}
+              </div>
+            ))}
         </div>
       ))}
       {props.editable && offered.length > 0 && (
@@ -256,6 +270,210 @@ function KeywordWatch(props: {
           props.change(next);
         }}
       />
+    </>
+  );
+}
+
+/** A whole number field; empty leaves the key out (its default applies). */
+function Count(props: { label: string; hint?: string; value: number | undefined; fallback: number; editable: boolean; set: (n: number | undefined) => void }) {
+  return (
+    <Field label={props.label} hint={props.hint}>
+      <input
+        type="number"
+        min={0}
+        step={1}
+        inputMode="numeric"
+        value={props.value ?? props.fallback}
+        disabled={!props.editable}
+        onChange={(e) => {
+          const raw = e.target.value.trim();
+          props.set(raw === "" ? undefined : Number(raw));
+        }}
+      />
+    </Field>
+  );
+}
+
+function withNumber<L extends Listener>(ls: L, key: string, value: number | undefined): L {
+  const next = { ...ls } as Record<string, unknown>;
+  if (value === undefined || Number.isNaN(value)) delete next[key];
+  else next[key] = value;
+  return next as L;
+}
+
+/** "then" and its step, shared by the time limit and the off-topic guard. */
+function ThenStep<L extends Extract<Listener, { kind: "time_limit" | "off_topic" }>>(props: {
+  label: string;
+  listener: L;
+  actions: { id: string; label: string }[];
+  nodeIds: string[];
+  editable: boolean;
+  change: (l: L) => void;
+}) {
+  const ls = props.listener;
+  const then = ls.then ?? "end_call";
+  return (
+    <div className="row2">
+      <Field label={props.label}>
+        <select
+          value={then}
+          disabled={!props.editable}
+          onChange={(e) => {
+            const next = { ...ls, then: e.target.value } as L;
+            if (e.target.value === "go_to") next.to = ls.to || props.nodeIds[0] || "";
+            else delete next.to;
+            if (e.target.value === "flag") delete next.say;
+            props.change(next);
+          }}
+        >
+          {props.actions.map((a) => (
+            <option key={a.id} value={a.id}>
+              {a.label}
+            </option>
+          ))}
+        </select>
+      </Field>
+      {then === "go_to" && (
+        <Field label="Step">
+          <select value={ls.to ?? ""} disabled={!props.editable} onChange={(e) => props.change({ ...ls, to: e.target.value })}>
+            {!ls.to && <option value="">Choose a step</option>}
+            {ls.to && !props.nodeIds.includes(ls.to) && <option value={ls.to}>{ls.to} (not a step)</option>}
+            {props.nodeIds.map((id) => (
+              <option key={id} value={id}>
+                {id}
+              </option>
+            ))}
+          </select>
+        </Field>
+      )}
+    </div>
+  );
+}
+
+const TIME_UP = {
+  hi: "इस कॉल का समय पूरा हो गया है। कॉल करने के लिए धन्यवाद…",
+  en: "We've reached the time limit for this call. Thank you for calling…",
+};
+const OFF_TOPIC_END = {
+  hi: "माफ़ कीजिए, इस कॉल पर हम सिर्फ़ इसी काम में मदद कर सकते हैं…",
+  en: "I'm sorry, on this call we can only help with what it's for…",
+};
+
+function TimeLimitForm(props: {
+  listener: Extract<Listener, { kind: "time_limit" }>;
+  nodeIds: string[];
+  vars: { name: string; about: string }[];
+  editable: boolean;
+  hindi: boolean;
+  change: (l: Listener) => void;
+}) {
+  const ls = props.listener;
+  const goTo = ls.then === "go_to";
+  const warn = ls.warn_minutes ?? 2;
+  return (
+    <>
+      <p className="hint" style={{ marginTop: 0 }}>
+        Applies to the whole call, from the moment it's answered.
+      </p>
+      <div className="row2">
+        <Count label="Longest call (minutes)" value={ls.minutes} fallback={30} editable={props.editable} set={(n) => props.change(withNumber(ls, "minutes", n))} />
+        <Count
+          label="Warning before (minutes)"
+          hint="0: no warning."
+          value={ls.warn_minutes}
+          fallback={2}
+          editable={props.editable}
+          set={(n) => props.change(withNumber(ls, "warn_minutes", n))}
+        />
+      </div>
+      {warn > 0 && (
+        <Field label="Warning (optional)" hint="Empty: the agent says it in its own words, in the caller's language.">
+          <VarText value={ls.warn_say ?? ""} rows={2} vars={props.vars} disabled={!props.editable} onChange={(v) => props.change(withText(ls, "warn_say", v))} />
+        </Field>
+      )}
+      <ThenStep
+        label="At the limit"
+        listener={ls}
+        actions={[
+          { id: "end_call", label: "End the call" },
+          { id: "go_to", label: "Go to a step (the call ends 3 minutes later)" },
+        ]}
+        nodeIds={props.nodeIds}
+        editable={props.editable}
+        change={props.change}
+      />
+      <Field
+        label={goTo ? "Say first (optional)" : "Last line (optional)"}
+        hint={goTo ? "For example: “Let me book a call back for you.”" : `Empty: “${props.hindi ? TIME_UP.hi : TIME_UP.en}”`}
+      >
+        <VarText value={ls.say ?? ""} rows={2} vars={props.vars} disabled={!props.editable} onChange={(v) => props.change(withText(ls, "say", v))} />
+      </Field>
+    </>
+  );
+}
+
+function OffTopicForm(props: {
+  listener: Extract<Listener, { kind: "off_topic" }>;
+  nodeIds: string[];
+  vars: { name: string; about: string }[];
+  editable: boolean;
+  hindi: boolean;
+  change: (l: Listener) => void;
+}) {
+  const ls = props.listener;
+  const then = ls.then ?? "end_call";
+  const thenAfter = ls.then_after ?? 4;
+  return (
+    <>
+      <Field label="What the call is about (optional)" hint="Empty: the flow's name, persona and the step the call is on.">
+        <textarea rows={2} value={ls.topic ?? ""} disabled={!props.editable} onChange={(e) => props.change(withText(ls, "topic", e.target.value))} />
+      </Field>
+      <div className="row2">
+        <Count
+          label="Bring them back after"
+          hint="Off-topic things said in a row."
+          value={ls.steer_after}
+          fallback={2}
+          editable={props.editable}
+          set={(n) => props.change(withNumber(ls, "steer_after", n))}
+        />
+        <Count
+          label="Then act after"
+          hint="In a row; 0: never."
+          value={ls.then_after}
+          fallback={4}
+          editable={props.editable}
+          set={(n) => props.change(withNumber(ls, "then_after", n))}
+        />
+      </div>
+      {thenAfter > 0 && (
+        <>
+          <ThenStep
+            label="Then"
+            listener={ls}
+            actions={[
+              { id: "end_call", label: "End the call" },
+              { id: "go_to", label: "Go to a step" },
+              { id: "flag", label: "Flag the call" },
+            ]}
+            nodeIds={props.nodeIds}
+            editable={props.editable}
+            change={props.change}
+          />
+          {then !== "flag" && (
+            <Field
+              label={then === "go_to" ? "Say first (optional)" : "Last line (optional)"}
+              hint={then === "go_to" ? undefined : `Empty: “${props.hindi ? OFF_TOPIC_END.hi : OFF_TOPIC_END.en}”`}
+            >
+              <VarText value={ls.say ?? ""} rows={2} vars={props.vars} disabled={!props.editable} onChange={(v) => props.change(withText(ls, "say", v))} />
+            </Field>
+          )}
+        </>
+      )}
+      <p className="hint">
+        A small AI check after each thing the caller says on these steps; replies of a word or two count as on topic. The agent's reply doesn't
+        wait for it.
+      </p>
     </>
   );
 }

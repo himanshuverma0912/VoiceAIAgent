@@ -54,7 +54,7 @@ from flow_engine.language import LanguageHint
 from flow_engine.listeners import mask_chat_ctx
 from flow_engine.resume import ResumeStore, choose_point, load_secret
 from flow_engine.runtime import CallState, default_end_call, resume_agent, start_agent
-from flow_engine.spec import EndNode, PromiseToPay, SecretGuard
+from flow_engine.spec import EndNode, OffTopic, PromiseToPay, SecretGuard
 from flow_engine.source import FlowSource
 from flow_engine.tools import ToolCaller
 
@@ -196,9 +196,9 @@ def build_llm(flow: Flow) -> openai.LLM:
 
 
 def build_side_llm(flow: Flow) -> openai.LLM | None:
-    """The LLM for side checks (promise to pay), when the flow has one. Same
-    gateway; LISTENER_LLM_MODEL picks a cheaper alias if you have one."""
-    if not any(isinstance(ls, PromiseToPay) for ls in flow.settings.listeners):
+    """The LLM for side checks (promise to pay, off topic), when the flow has
+    one. Same gateway; LISTENER_LLM_MODEL picks a cheaper alias if you have one."""
+    if not any(isinstance(ls, (PromiseToPay, OffTopic)) for ls in flow.settings.listeners):
         return None
     model = _env("LISTENER_LLM_MODEL") or flow.settings.llm_model or _env("LLM_MODEL", "voice-fast")
     if LITELLM_URL:
